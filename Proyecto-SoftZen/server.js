@@ -5,16 +5,23 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
+import { Pool } from 'pg'; // Cambiamos sqlite3 por pg
 import { therapyTypes } from './predefinedTherapy.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = 3001;
-const JWT_SECRET = 'therapeutic-yoga-secret-key';
+const PORT = process.env.PORT || 3001;
+const JWT_SECRET = process.env.JWT_SECRET || 'therapeutic-yoga-secret-key';
+
+// Configuración de PostgreSQL para Railway
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false // Necesario para Railway
+  }
+});
 
 // Cache en memoria para optimización
 const cache = new Map();
@@ -61,123 +68,122 @@ const clearCache = (pattern) => {
   }
 };
 
-// Database initialization con optimizaciones
-let db;
-
+// Database initialization para PostgreSQL
 async function initDatabase() {
-  db = await open({
-    filename: path.join(__dirname, 'therapy.db'),
-    driver: sqlite3.Database
-  });
+  try {
+    // Crear tablas con índices optimizados
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+          id SERIAL PRIMARY KEY,
+          email TEXT UNIQUE NOT NULL,
+          password TEXT NOT NULL,
+          name TEXT,
+          role TEXT DEFAULT 'instructor',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          last_login TIMESTAMP,
+          is_active BOOLEAN DEFAULT TRUE
+      );
 
-  // Configuraciones de rendimiento para SQLite
-  await db.exec(`
-        PRAGMA journal_mode = WAL;
-        PRAGMA synchronous = NORMAL;
-        PRAGMA cache_size = 1000;
-        PRAGMA temp_store = MEMORY;
-        PRAGMA mmap_size = 268435456;
+      CREATE TABLE IF NOT EXISTS patients (
+          id SERIAL PRIMARY KEY,
+          name TEXT,
+          email TEXT NOT NULL,
+          age INTEGER,
+          condition TEXT,
+          instructor_id INTEGER NOT NULL,
+          assigned_series TEXT,
+          current_session INTEGER DEFAULT 0,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          is_active BOOLEAN DEFAULT TRUE,
+          FOREIGN KEY (instructor_id) REFERENCES users (id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS therapy_series (
+          id SERIAL PRIMARY KEY,
+          name TEXT NOT NULL,
+          therapy_type TEXT NOT NULL,
+          postures TEXT NOT NULL,
+          total_sessions INTEGER NOT NULL,
+          instructor_id INTEGER NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          is_active BOOLEAN DEFAULT TRUE,
+          FOREIGN KEY (instructor_id) REFERENCES users (id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS sessions (
+          id SERIAL PRIMARY KEY,
+          patient_id INTEGER NOT NULL,
+          series_id INTEGER NOT NULL,
+          session_number INTEGER NOT NULL,
+          pain_before INTEGER,
+          pain_after INTEGER,
+          comments TEXT,
+          duration_minutes INTEGER,
+          completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (patient_id) REFERENCES patients (id) ON DELETE CASCADE,
+          FOREIGN KEY (series_id) REFERENCES therapy_series (id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS notifications (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER NOT NULL,
+          type TEXT NOT NULL,
+          title TEXT NOT NULL,
+          message TEXT NOT NULL,
+          is_read BOOLEAN DEFAULT FALSE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS analytics_events (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER,
+          event_type TEXT NOT NULL,
+          event_data TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+      );
+
+      -- Índices para mejor rendimiento
+      CREATE INDEX IF NOT EXISTS idx_patients_instructor ON patients(instructor_id);
+      CREATE INDEX IF NOT EXISTS idx_sessions_patient ON sessions(patient_id);
+      CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(completed_at);
+      CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_read);
+      CREATE INDEX IF NOT EXISTS idx_analytics_user_date ON analytics_events(user_id, created_at);
     `);
 
-  // Crear tablas con índices optimizados
-  await db.exec(`
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            name TEXT,
-            role TEXT DEFAULT 'instructor',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            last_login DATETIME,
-            is_active BOOLEAN DEFAULT 1
-        );
-
-        CREATE TABLE IF NOT EXISTS patients (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            email TEXT NOT NULL,
-            age INTEGER,
-            condition TEXT,
-            instructor_id INTEGER NOT NULL,
-            assigned_series TEXT,
-            current_session INTEGER DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            is_active BOOLEAN DEFAULT 1,
-            FOREIGN KEY (instructor_id) REFERENCES users (id)
-        );
-
-        CREATE TABLE IF NOT EXISTS therapy_series (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            therapy_type TEXT NOT NULL,
-            postures TEXT NOT NULL,
-            total_sessions INTEGER NOT NULL,
-            instructor_id INTEGER NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            is_active BOOLEAN DEFAULT 1,
-            FOREIGN KEY (instructor_id) REFERENCES users (id)
-        );
-
-        CREATE TABLE IF NOT EXISTS sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            patient_id INTEGER NOT NULL,
-            series_id INTEGER NOT NULL,
-            session_number INTEGER NOT NULL,
-            pain_before INTEGER,
-            pain_after INTEGER,
-            comments TEXT,
-            duration_minutes INTEGER,
-            completed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (patient_id) REFERENCES patients (id),
-            FOREIGN KEY (series_id) REFERENCES therapy_series (id)
-        );
-
-        CREATE TABLE IF NOT EXISTS notifications (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            type TEXT NOT NULL,
-            title TEXT NOT NULL,
-            message TEXT NOT NULL,
-            is_read BOOLEAN DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users (id)
-        );
-
-        CREATE TABLE IF NOT EXISTS analytics_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            event_type TEXT NOT NULL,
-            event_data TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users (id)
-        );
-
-        -- Índices para mejor rendimiento
-        CREATE INDEX IF NOT EXISTS idx_patients_instructor ON patients(instructor_id);
-        CREATE INDEX IF NOT EXISTS idx_sessions_patient ON sessions(patient_id);
-        CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(completed_at);
-        CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_read);
-        CREATE INDEX IF NOT EXISTS idx_analytics_user_date ON analytics_events(user_id, created_at);
-    `);
-
-  console.log('🚀 Database initialized with performance optimizations');
+    console.log('🚀 PostgreSQL Database initialized with performance optimizations');
+  } catch (error) {
+    console.error('Database initialization error:', error);
+    throw error;
+  }
 }
+
+// Función para ejecutar consultas (wrapper para manejo de errores)
+const query = async (sql, params = []) => {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(sql, params);
+    return result;
+  } finally {
+    client.release();
+  }
+};
 
 // Función para registrar eventos de analytics
 const logAnalyticsEvent = async (userId, eventType, eventData = {}) => {
   try {
-    if (!db) return; // Skip if DB not initialized
-    await db.run(
-        'INSERT INTO analytics_events (user_id, event_type, event_data) VALUES (?, ?, ?)',
-        [userId, eventType, JSON.stringify(eventData)]
+    await query(
+      'INSERT INTO analytics_events (user_id, event_type, event_data) VALUES ($1, $2, $3)',
+      [userId, eventType, JSON.stringify(eventData)]
     );
   } catch (error) {
     console.error('Analytics logging error:', error);
   }
 };
 
-// Authentication middleware mejorado
+// Authentication middleware
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -192,8 +198,6 @@ const authenticateToken = (req, res, next) => {
     }
     req.user = user;
 
-    // Log analytics
-    // Log analytics (skip if error)
     try {
       await logAnalyticsEvent(user.id, 'api_request', {
         endpoint: req.originalUrl,
@@ -207,12 +211,11 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Auth routes mejoradas
+// Auth routes
 app.post('/api/register', async (req, res) => {
   try {
     const { email, password, name, role } = req.body;
 
-    // Validaciones mejoradas
     if (!email || !password || !name) {
       return res.status(400).json({
         error: 'Todos los campos son obligatorios',
@@ -226,21 +229,20 @@ app.post('/api/register', async (req, res) => {
       });
     }
 
-    const existingUser = await db.get('SELECT id FROM users WHERE email = ?', [email]);
-    if (existingUser) {
+    const existingUser = await query('SELECT id FROM users WHERE email = $1', [email]);
+    if (existingUser.rows.length > 0) {
       return res.status(400).json({ error: 'El usuario ya existe' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    const result = await db.run(
-        'INSERT INTO users (email, password, name, role) VALUES (?, ?, ?, ?)',
-        [email, hashedPassword, name, role || 'instructor']
+    const result = await query(
+      'INSERT INTO users (email, password, name, role) VALUES ($1, $2, $3, $4) RETURNING id, email, name, role',
+      [email, hashedPassword, name, role || 'instructor']
     );
 
-    const user = await db.get('SELECT id, email, name, role FROM users WHERE id = ?', [result.lastID]);
+    const user = result.rows[0];
 
-    // Log analytics
     await logAnalyticsEvent(user.id, 'user_registered', { role: user.role });
 
     const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
@@ -260,16 +262,15 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ error: 'Email y contraseña son obligatorios' });
     }
 
-    const user = await db.get('SELECT * FROM users WHERE email = ? AND is_active = 1', [email]);
+    const userResult = await query('SELECT * FROM users WHERE email = $1 AND is_active = TRUE', [email]);
+    const user = userResult.rows[0];
 
     if (!user || !await bcrypt.compare(password, user.password)) {
       return res.status(400).json({ error: 'Credenciales inválidas' });
     }
 
-    // Actualizar último login
-    await db.run('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?', [user.id]);
+    await query('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1', [user.id]);
 
-    // Log analytics
     try {
       await logAnalyticsEvent(user.id, 'user_login', { timestamp: new Date().toISOString() });
     } catch (error) {
@@ -296,18 +297,18 @@ app.get('/api/patients', authenticateToken, cacheMiddleware(), async (req, res) 
       return res.status(403).json({ error: 'Acceso denegado' });
     }
 
-    const patients = await db.all(`
-            SELECT p.*, 
-                   COUNT(s.id) as total_sessions_completed,
-                   AVG(s.pain_before - s.pain_after) as avg_pain_improvement
-            FROM patients p
-            LEFT JOIN sessions s ON p.id = s.patient_id
-            WHERE p.instructor_id = ? AND p.is_active = 1
-            GROUP BY p.id
-            ORDER BY p.created_at DESC
-        `, [req.user.id]);
+    const patientsResult = await query(`
+      SELECT p.*, 
+             COUNT(s.id) as total_sessions_completed,
+             AVG(s.pain_before - s.pain_after) as avg_pain_improvement
+      FROM patients p
+      LEFT JOIN sessions s ON p.id = s.patient_id
+      WHERE p.instructor_id = $1 AND p.is_active = TRUE
+      GROUP BY p.id
+      ORDER BY p.created_at DESC
+    `, [req.user.id]);
 
-    const patientsWithSeries = patients.map(patient => ({
+    const patientsWithSeries = patientsResult.rows.map(patient => ({
       ...patient,
       assignedSeries: patient.assigned_series ? JSON.parse(patient.assigned_series) : null
     }));
@@ -327,7 +328,6 @@ app.post('/api/patients', authenticateToken, async (req, res) => {
 
     const { name, email, age, condition } = req.body;
 
-    // Validaciones
     if (!name || !email || !age) {
       return res.status(400).json({ error: 'Nombre, email y edad son obligatorios' });
     }
@@ -336,14 +336,13 @@ app.post('/api/patients', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Edad debe estar entre 1 y 120 años' });
     }
 
-    const result = await db.run(
-        'INSERT INTO patients (name, email, age, condition, instructor_id) VALUES (?, ?, ?, ?, ?)',
-        [name, email, age, condition, req.user.id]
+    const result = await query(
+      'INSERT INTO patients (name, email, age, condition, instructor_id) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [name, email, age, condition, req.user.id]
     );
 
-    const patient = await db.get('SELECT * FROM patients WHERE id = ?', [result.lastID]);
+    const patient = result.rows[0];
 
-    // Limpiar cache y log analytics
     clearCache('patients');
     await logAnalyticsEvent(req.user.id, 'patient_created', { patientId: patient.id });
 
@@ -363,17 +362,18 @@ app.put('/api/patients/:id', authenticateToken, async (req, res) => {
     const patientId = parseInt(req.params.id);
     const { name, email, age, condition } = req.body;
 
-    const result = await db.run(`
-            UPDATE patients 
-            SET name = ?, email = ?, age = ?, condition = ?, updated_at = CURRENT_TIMESTAMP 
-            WHERE id = ? AND instructor_id = ?
-        `, [name, email, age, condition, patientId, req.user.id]);
+    const result = await query(`
+      UPDATE patients 
+      SET name = $1, email = $2, age = $3, condition = $4, updated_at = CURRENT_TIMESTAMP 
+      WHERE id = $5 AND instructor_id = $6
+      RETURNING *
+    `, [name, email, age, condition, patientId, req.user.id]);
 
-    if (result.changes === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Paciente no encontrado' });
     }
 
-    const patient = await db.get('SELECT * FROM patients WHERE id = ?', [patientId]);
+    const patient = result.rows[0];
 
     clearCache('patients');
     await logAnalyticsEvent(req.user.id, 'patient_updated', { patientId });
@@ -394,12 +394,12 @@ app.delete('/api/patients/:id', authenticateToken, async (req, res) => {
     const patientId = parseInt(req.params.id);
 
     // Soft delete
-    const result = await db.run(
-        'UPDATE patients SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND instructor_id = ?',
-        [patientId, req.user.id]
+    const result = await query(
+      'UPDATE patients SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND instructor_id = $2 RETURNING *',
+      [patientId, req.user.id]
     );
 
-    if (result.changes === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Paciente no encontrado' });
     }
 
@@ -430,19 +430,20 @@ app.get('/api/therapy-series', authenticateToken, cacheMiddleware(), async (req,
       return res.status(403).json({ error: 'Acceso denegado' });
     }
 
-    const series = await db.all(`
-            SELECT ts.*, 
-                   COUNT(DISTINCT p.id) as assigned_patients_count,
-                   COUNT(DISTINCT s.id) as total_sessions_count
-            FROM therapy_series ts
-            LEFT JOIN patients p ON JSON_EXTRACT(p.assigned_series, '$.id') = ts.id
-            LEFT JOIN sessions s ON s.series_id = ts.id
-            WHERE ts.instructor_id = ? AND ts.is_active = 1
-            GROUP BY ts.id
-            ORDER BY ts.created_at DESC
-        `, [req.user.id]);
+    // En PostgreSQL usamos el operador -> para extraer valores JSON
+    const seriesResult = await query(`
+      SELECT ts.*, 
+             COUNT(DISTINCT p.id) as assigned_patients_count,
+             COUNT(DISTINCT s.id) as total_sessions_count
+      FROM therapy_series ts
+      LEFT JOIN patients p ON (p.assigned_series::json->>'id')::int = ts.id
+      LEFT JOIN sessions s ON s.series_id = ts.id
+      WHERE ts.instructor_id = $1 AND ts.is_active = TRUE
+      GROUP BY ts.id
+      ORDER BY ts.created_at DESC
+    `, [req.user.id]);
 
-    const seriesWithPostures = series.map(s => ({
+    const seriesWithPostures = seriesResult.rows.map(s => ({
       ...s,
       postures: JSON.parse(s.postures)
     }));
@@ -462,33 +463,33 @@ app.delete('/api/therapy-series/:id', authenticateToken, async (req, res) => {
 
     const seriesId = parseInt(req.params.id);
 
-    // Verificar que la serie pertenece al instructor
-    const series = await db.get(
-        'SELECT * FROM therapy_series WHERE id = ? AND instructor_id = ?',
-        [seriesId, req.user.id]
+    const seriesResult = await query(
+      'SELECT * FROM therapy_series WHERE id = $1 AND instructor_id = $2',
+      [seriesId, req.user.id]
     );
+    const series = seriesResult.rows[0];
 
     if (!series) {
       return res.status(404).json({ error: 'Serie no encontrada' });
     }
 
     // Verificar que no hay pacientes asignados a esta serie
-    const assignedPatients = await db.all(`
-            SELECT id FROM patients 
-            WHERE instructor_id = ? AND assigned_series IS NOT NULL 
-            AND JSON_EXTRACT(assigned_series, '$.id') = ?
-        `, [req.user.id, seriesId]);
+    const assignedPatients = await query(`
+      SELECT id FROM patients 
+      WHERE instructor_id = $1 AND assigned_series IS NOT NULL 
+      AND (assigned_series::json->>'id')::int = $2
+    `, [req.user.id, seriesId]);
 
-    if (assignedPatients.length > 0) {
+    if (assignedPatients.rows.length > 0) {
       return res.status(400).json({
         error: 'No se puede eliminar una serie que tiene pacientes asignados'
       });
     }
 
     // Soft delete
-    await db.run(
-        'UPDATE therapy_series SET is_active = 0 WHERE id = ? AND instructor_id = ?',
-        [seriesId, req.user.id]
+    await query(
+      'UPDATE therapy_series SET is_active = FALSE WHERE id = $1 AND instructor_id = $2',
+      [seriesId, req.user.id]
     );
 
     clearCache('therapy-series');
@@ -517,12 +518,12 @@ app.post('/api/therapy-series', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Debe seleccionar al menos una postura' });
     }
 
-    const result = await db.run(
-        'INSERT INTO therapy_series (name, therapy_type, postures, total_sessions, instructor_id) VALUES (?, ?, ?, ?, ?)',
-        [name, therapyType, JSON.stringify(postures), totalSessions, req.user.id]
+    const result = await query(
+      'INSERT INTO therapy_series (name, therapy_type, postures, total_sessions, instructor_id) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [name, therapyType, JSON.stringify(postures), totalSessions, req.user.id]
     );
 
-    const series = await db.get('SELECT * FROM therapy_series WHERE id = ?', [result.lastID]);
+    const series = result.rows[0];
 
     clearCache('therapy-series');
     await logAnalyticsEvent(req.user.id, 'series_created', {
@@ -551,69 +552,69 @@ app.get('/api/dashboard/analytics', authenticateToken, cacheMiddleware(2 * 60 * 
 
     const [stats, recentActivity, painTrends, sessionStats] = await Promise.all([
       // Estadísticas generales
-      db.get(`
-                SELECT 
-                    COUNT(DISTINCT p.id) as total_patients,
-                    COUNT(DISTINCT CASE WHEN p.assigned_series IS NOT NULL THEN p.id END) as active_patients,
-                    COUNT(DISTINCT ts.id) as total_series,
-                    COUNT(s.id) as total_sessions,
-                    AVG(s.pain_before - s.pain_after) as avg_pain_improvement,
-                    AVG(s.duration_minutes) as avg_session_duration
-                FROM patients p
-                LEFT JOIN therapy_series ts ON ts.instructor_id = ?
-                LEFT JOIN sessions s ON s.patient_id = p.id
-                WHERE p.instructor_id = ? AND p.is_active = 1
-            `, [req.user.id, req.user.id]),
+      query(`
+        SELECT 
+            COUNT(DISTINCT p.id) as total_patients,
+            COUNT(DISTINCT CASE WHEN p.assigned_series IS NOT NULL THEN p.id END) as active_patients,
+            COUNT(DISTINCT ts.id) as total_series,
+            COUNT(s.id) as total_sessions,
+            AVG(s.pain_before - s.pain_after) as avg_pain_improvement,
+            AVG(s.duration_minutes) as avg_session_duration
+        FROM patients p
+        LEFT JOIN therapy_series ts ON ts.instructor_id = $1
+        LEFT JOIN sessions s ON s.patient_id = p.id
+        WHERE p.instructor_id = $1 AND p.is_active = TRUE
+      `, [req.user.id]),
 
       // Actividad reciente
-      db.all(`
-                SELECT 'session' as type, p.name as patient_name, s.completed_at as date, 
-                       s.pain_before, s.pain_after, s.session_number
-                FROM sessions s
-                JOIN patients p ON s.patient_id = p.id
-                WHERE p.instructor_id = ?
-                ORDER BY s.completed_at DESC
-                LIMIT 10
-            `, [req.user.id]),
+      query(`
+        SELECT 'session' as type, p.name as patient_name, s.completed_at as date, 
+               s.pain_before, s.pain_after, s.session_number
+        FROM sessions s
+        JOIN patients p ON s.patient_id = p.id
+        WHERE p.instructor_id = $1
+        ORDER BY s.completed_at DESC
+        LIMIT 10
+      `, [req.user.id]),
 
-      // Tendencias de dolor por mes
-      db.all(`
-                SELECT 
-                    strftime('%Y-%m', s.completed_at) as month,
-                    AVG(s.pain_before) as avg_pain_before,
-                    AVG(s.pain_after) as avg_pain_after,
-                    COUNT(s.id) as session_count
-                FROM sessions s
-                JOIN patients p ON s.patient_id = p.id
-                WHERE p.instructor_id = ? AND s.completed_at >= date('now', '-6 months')
-                GROUP BY strftime('%Y-%m', s.completed_at)
-                ORDER BY month
-            `, [req.user.id]),
+      // Tendencias de dolor por mes (PostgreSQL usa to_char en lugar de strftime)
+      query(`
+        SELECT 
+            to_char(s.completed_at, 'YYYY-MM') as month,
+            AVG(s.pain_before) as avg_pain_before,
+            AVG(s.pain_after) as avg_pain_after,
+            COUNT(s.id) as session_count
+        FROM sessions s
+        JOIN patients p ON s.patient_id = p.id
+        WHERE p.instructor_id = $1 AND s.completed_at >= (CURRENT_DATE - INTERVAL '6 months')
+        GROUP BY to_char(s.completed_at, 'YYYY-MM')
+        ORDER BY month
+      `, [req.user.id]),
 
       // Estadísticas de sesiones por tipo de terapia
-      db.all(`
-                SELECT 
-                    ts.therapy_type,
-                    COUNT(s.id) as session_count,
-                    AVG(s.pain_before - s.pain_after) as avg_improvement,
-                    AVG(s.duration_minutes) as avg_duration
-                FROM sessions s
-                JOIN therapy_series ts ON s.series_id = ts.id
-                JOIN patients p ON s.patient_id = p.id
-                WHERE p.instructor_id = ?
-                GROUP BY ts.therapy_type
-            `, [req.user.id])
+      query(`
+        SELECT 
+            ts.therapy_type,
+            COUNT(s.id) as session_count,
+            AVG(s.pain_before - s.pain_after) as avg_improvement,
+            AVG(s.duration_minutes) as avg_duration
+        FROM sessions s
+        JOIN therapy_series ts ON s.series_id = ts.id
+        JOIN patients p ON s.patient_id = p.id
+        WHERE p.instructor_id = $1
+        GROUP BY ts.therapy_type
+      `, [req.user.id])
     ]);
 
     res.json({
       stats: {
-        ...stats,
-        avg_pain_improvement: Math.round((stats.avg_pain_improvement || 0) * 100) / 100,
-        avg_session_duration: Math.round(stats.avg_session_duration || 0)
+        ...stats.rows[0],
+        avg_pain_improvement: Math.round((stats.rows[0].avg_pain_improvement || 0) * 100) / 100,
+        avg_session_duration: Math.round(stats.rows[0].avg_session_duration || 0)
       },
-      recentActivity,
-      painTrends,
-      sessionStats,
+      recentActivity: recentActivity.rows,
+      painTrends: painTrends.rows,
+      sessionStats: sessionStats.rows,
       generated_at: new Date().toISOString()
     });
   } catch (error) {
@@ -625,14 +626,14 @@ app.get('/api/dashboard/analytics', authenticateToken, cacheMiddleware(2 * 60 * 
 // Notifications system
 app.get('/api/notifications', authenticateToken, async (req, res) => {
   try {
-    const notifications = await db.all(`
-            SELECT * FROM notifications 
-            WHERE user_id = ? 
-            ORDER BY created_at DESC 
-            LIMIT 20
-        `, [req.user.id]);
+    const notifications = await query(`
+      SELECT * FROM notifications 
+      WHERE user_id = $1 
+      ORDER BY created_at DESC 
+      LIMIT 20
+    `, [req.user.id]);
 
-    res.json(notifications);
+    res.json(notifications.rows);
   } catch (error) {
     console.error('Get notifications error:', error);
     res.status(500).json({ error: 'Error del servidor' });
@@ -641,9 +642,9 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
 
 app.put('/api/notifications/:id/read', authenticateToken, async (req, res) => {
   try {
-    await db.run(
-        'UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?',
-        [req.params.id, req.user.id]
+    await query(
+      'UPDATE notifications SET is_read = TRUE WHERE id = $1 AND user_id = $2',
+      [req.params.id, req.user.id]
     );
     res.json({ message: 'Notificación marcada como leída' });
   } catch (error) {
@@ -665,31 +666,33 @@ app.get('/api/reports/export', authenticateToken, async (req, res) => {
     let params = [req.user.id];
 
     if (dateFrom && dateTo) {
-      dateFilter = 'AND s.completed_at BETWEEN ? AND ?';
+      dateFilter = 'AND s.completed_at BETWEEN $2 AND $3';
       params.push(dateFrom, dateTo);
     }
 
-    const reportData = await db.all(`
-            SELECT 
-                p.name as patient_name,
-                p.email as patient_email,
-                p.age as patient_age,
-                p.condition as patient_condition,
-                ts.name as series_name,
-                ts.therapy_type,
-                s.session_number,
-                s.pain_before,
-                s.pain_after,
-                s.pain_before - s.pain_after as pain_improvement,
-                s.duration_minutes,
-                s.comments,
-                s.completed_at
-            FROM sessions s
-            JOIN patients p ON s.patient_id = p.id
-            JOIN therapy_series ts ON s.series_id = ts.id
-            WHERE p.instructor_id = ? ${dateFilter}
-            ORDER BY s.completed_at DESC
-        `, params);
+    const reportResult = await query(`
+      SELECT 
+          p.name as patient_name,
+          p.email as patient_email,
+          p.age as patient_age,
+          p.condition as patient_condition,
+          ts.name as series_name,
+          ts.therapy_type,
+          s.session_number,
+          s.pain_before,
+          s.pain_after,
+          s.pain_before - s.pain_after as pain_improvement,
+          s.duration_minutes,
+          s.comments,
+          s.completed_at
+      FROM sessions s
+      JOIN patients p ON s.patient_id = p.id
+      JOIN therapy_series ts ON s.series_id = ts.id
+      WHERE p.instructor_id = $1 ${dateFilter}
+      ORDER BY s.completed_at DESC
+    `, params);
+
+    const reportData = reportResult.rows;
 
     await logAnalyticsEvent(req.user.id, 'report_exported', {
       format,
@@ -748,10 +751,13 @@ app.post('/api/patients/:id/assign-series', authenticateToken, async (req, res) 
     const patientId = parseInt(req.params.id);
     const { seriesId } = req.body;
 
-    const [patient, series] = await Promise.all([
-      db.get('SELECT * FROM patients WHERE id = ? AND instructor_id = ?', [patientId, req.user.id]),
-      db.get('SELECT * FROM therapy_series WHERE id = ? AND instructor_id = ?', [seriesId, req.user.id])
+    const [patientResult, seriesResult] = await Promise.all([
+      query('SELECT * FROM patients WHERE id = $1 AND instructor_id = $2', [patientId, req.user.id]),
+      query('SELECT * FROM therapy_series WHERE id = $1 AND instructor_id = $2', [seriesId, req.user.id])
     ]);
+
+    const patient = patientResult.rows[0];
+    const series = seriesResult.rows[0];
 
     if (!patient || !series) {
       return res.status(404).json({ error: 'Paciente o serie no encontrados' });
@@ -762,21 +768,24 @@ app.post('/api/patients/:id/assign-series', authenticateToken, async (req, res) 
       postures: JSON.parse(series.postures)
     };
 
-    await db.run(
-        'UPDATE patients SET assigned_series = ?, current_session = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-        [JSON.stringify(seriesData), patientId]
+    await query(
+      'UPDATE patients SET assigned_series = $1, current_session = 0, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
+      [JSON.stringify(seriesData), patientId]
     );
 
     // Crear notificación para el paciente si está registrado
-    const patientUser = await db.get('SELECT id FROM users WHERE email = ?', [patient.email]);
+    const patientUserResult = await query('SELECT id FROM users WHERE email = $1', [patient.email]);
+    const patientUser = patientUserResult.rows[0];
+    
     if (patientUser) {
-      await db.run(`
-                INSERT INTO notifications (user_id, type, title, message) 
-                VALUES (?, 'series_assigned', 'Nueva Serie Asignada', ?)
-            `, [patientUser.id, `Tu instructor te ha asignado la serie "${series.name}". ¡Puedes comenzar cuando estés listo!`]);
+      await query(`
+        INSERT INTO notifications (user_id, type, title, message) 
+        VALUES ($1, 'series_assigned', 'Nueva Serie Asignada', $2)
+      `, [patientUser.id, `Tu instructor te ha asignado la serie "${series.name}". ¡Puedes comenzar cuando estés listo!`]);
     }
 
-    const updatedPatient = await db.get('SELECT * FROM patients WHERE id = ?', [patientId]);
+    const updatedPatientResult = await query('SELECT * FROM patients WHERE id = $1', [patientId]);
+    const updatedPatient = updatedPatientResult.rows[0];
 
     clearCache('patients');
     await logAnalyticsEvent(req.user.id, 'series_assigned', {
@@ -803,7 +812,8 @@ app.get('/api/my-series', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Acceso denegado' });
     }
 
-    const patient = await db.get('SELECT * FROM patients WHERE email = ? AND is_active = 1', [req.user.email]);
+    const patientResult = await query('SELECT * FROM patients WHERE email = $1 AND is_active = TRUE', [req.user.email]);
+    const patient = patientResult.rows[0];
 
     if (!patient || !patient.assigned_series) {
       return res.status(404).json({ error: 'No se encontró serie asignada' });
@@ -835,7 +845,8 @@ app.post('/api/sessions', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Los comentarios deben tener al menos 10 caracteres' });
     }
 
-    const patient = await db.get('SELECT * FROM patients WHERE email = ? AND is_active = 1', [req.user.email]);
+    const patientResult = await query('SELECT * FROM patients WHERE email = $1 AND is_active = TRUE', [req.user.email]);
+    const patient = patientResult.rows[0];
 
     if (!patient) {
       return res.status(404).json({ error: 'Paciente no encontrado' });
@@ -845,24 +856,25 @@ app.post('/api/sessions', authenticateToken, async (req, res) => {
     const sessionNumber = (patient.current_session || 0) + 1;
 
     // Insertar sesión
-    const result = await db.run(`
-            INSERT INTO sessions (patient_id, series_id, session_number, pain_before, pain_after, comments, duration_minutes) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        `, [patient.id, assignedSeries.id, sessionNumber, painBefore, painAfter, comments, durationMinutes]);
+    const result = await query(`
+      INSERT INTO sessions (patient_id, series_id, session_number, pain_before, pain_after, comments, duration_minutes) 
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING *
+    `, [patient.id, assignedSeries.id, sessionNumber, painBefore, painAfter, comments, durationMinutes]);
 
     // Actualizar sesión actual del paciente
-    await db.run(
-        'UPDATE patients SET current_session = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-        [sessionNumber, patient.id]
+    await query(
+      'UPDATE patients SET current_session = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+      [sessionNumber, patient.id]
     );
 
     // Crear notificación para el instructor
-    await db.run(`
-            INSERT INTO notifications (user_id, type, title, message) 
-            VALUES (?, 'session_completed', 'Sesión Completada', ?)
-        `, [patient.instructor_id, `${patient.name} completó la sesión ${sessionNumber} con una mejora de dolor de ${painBefore - painAfter} puntos.`]);
+    await query(`
+      INSERT INTO notifications (user_id, type, title, message) 
+      VALUES ($1, 'session_completed', 'Sesión Completada', $2)
+    `, [patient.instructor_id, `${patient.name} completó la sesión ${sessionNumber} con una mejora de dolor de ${painBefore - painAfter} puntos.`]);
 
-    const session = await db.get('SELECT * FROM sessions WHERE id = ?', [result.lastID]);
+    const session = result.rows[0];
 
     clearCache('patients');
     await logAnalyticsEvent(req.user.id, 'session_completed', {
@@ -887,24 +899,25 @@ app.get('/api/patients/:id/sessions', authenticateToken, async (req, res) => {
 
     const patientId = parseInt(req.params.id);
 
-    const patient = await db.get(
-        'SELECT * FROM patients WHERE id = ? AND instructor_id = ?',
-        [patientId, req.user.id]
+    const patientResult = await query(
+      'SELECT * FROM patients WHERE id = $1 AND instructor_id = $2',
+      [patientId, req.user.id]
     );
+    const patient = patientResult.rows[0];
 
     if (!patient) {
       return res.status(404).json({ error: 'Paciente no encontrado' });
     }
 
-    const sessions = await db.all(`
-            SELECT s.*, ts.name as series_name, ts.therapy_type
-            FROM sessions s
-            LEFT JOIN therapy_series ts ON s.series_id = ts.id
-            WHERE s.patient_id = ? 
-            ORDER BY s.completed_at DESC
-        `, [patientId]);
+    const sessionsResult = await query(`
+      SELECT s.*, ts.name as series_name, ts.therapy_type
+      FROM sessions s
+      LEFT JOIN therapy_series ts ON s.series_id = ts.id
+      WHERE s.patient_id = $1 
+      ORDER BY s.completed_at DESC
+    `, [patientId]);
 
-    res.json(sessions);
+    res.json(sessionsResult.rows);
   } catch (error) {
     console.error('Get patient sessions error:', error);
     res.status(500).json({ error: 'Error del servidor' });
@@ -912,13 +925,24 @@ app.get('/api/patients/:id/sessions', authenticateToken, async (req, res) => {
 });
 
 // Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    cache_size: cache.size,
-    uptime: process.uptime()
-  });
+app.get('/api/health', async (req, res) => {
+  try {
+    // Verificar conexión a la base de datos
+    await query('SELECT 1');
+    res.json({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      cache_size: cache.size,
+      uptime: process.uptime(),
+      database: 'connected'
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'unhealthy',
+      error: 'Database connection failed',
+      details: error.message
+    });
+  }
 });
 
 // Serve frontend
@@ -946,7 +970,7 @@ setInterval(() => {
 initDatabase().then(() => {
   app.listen(PORT, () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
-    console.log(`📊 Performance optimizations enabled`);
+    console.log(`📊 PostgreSQL database connected`);
     console.log(`💾 Cache system active`);
     console.log(`📈 Analytics tracking enabled`);
   });
