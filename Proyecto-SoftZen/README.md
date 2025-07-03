@@ -25,7 +25,7 @@ Backend
 
     Express.js
 
-    SQLite (con base de datos local)
+    Postgresql (Para conectarla a la nube y permitir realizar transacciones)
 
     bcryptjs (para hashing de contraseñas)
 
