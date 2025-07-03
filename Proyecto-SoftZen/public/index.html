@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Yoga Terapéutico Online</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Loading screen -->
+        <div id="loading" class="loading-screen">
+            <div class="loading-spinner"></div>
+            <p>Cargando...</p>
+        </div>
+
+        <!-- Login/Register screen -->
+        <div id="auth-screen" class="screen hidden">
+            <div class="auth-container">
+                <div class="auth-header">
+                    <h1>Yoga Terapéutico Online</h1>
+                    <p>Yoga que transforma, cura y renueva</p>
+                </div>
+
+                <div class="auth-tabs">
+                    <button class="tab-btn active" data-tab="login">Iniciar Sesión</button>
+                    <button class="tab-btn" data-tab="register">Registrarse</button>
+                </div>
+
+                <form id="login-form" class="auth-form">
+                    <div class="form-group">
+                        <label for="login-email">Email</label>
+                        <input type="email" id="login-email" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="login-password">Contraseña</label>
+                        <input type="password" id="login-password" required>
+                    </div>
+                    <button type="submit" class="btn-primary">Iniciar Sesión</button>
+                </form>
+
+                <form id="register-form" class="auth-form hidden">
+                    <div class="form-group">
+                        <label for="register-name">Nombre</label>
+                        <input type="text" id="register-name" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="register-email">Email</label>
+                        <input type="email" id="register-email" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="register-password">Contraseña</label>
+                        <input type="password" id="register-password" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="register-role">Rol</label>
+                        <select id="register-role" required>
+                            <option value="instructor">Instructor</option>
+                            <option value="patient">Paciente</option>
+                        </select>
+                    </div>
+                    <button type="submit" class="btn-primary">Registrarse</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Instructor Dashboard -->
+        <div id="instructor-dashboard" class="screen hidden">
+            <nav class="navbar">
+                <div class="nav-brand">Yoga Terapéutico Online</div>
+                <div class="nav-menu">
+                    <button class="nav-btn active" data-view="dashboard">📊 Dashboard</button>
+                    <button class="nav-btn" data-view="patients">👥 Pacientes</button>
+                    <button class="nav-btn" data-view="series">🧘‍♀️ Series</button>
+                    <button class="nav-btn" data-view="create-series">➕ Crear Serie</button>
+                </div>
+                <div class="nav-user">
+                    <span id="user-name"></span>
+                    <button id="logout-btn" class="btn-secondary">Cerrar Sesión</button>
+                </div>
+            </nav>
+
+            <main class="main-content">
+                <!-- Dashboard View -->
+                <div id="dashboard-view" class="view">
+                    <div class="view-header">
+                        <h2>📊 Dashboard General</h2>
+                        <div class="header-actions">
+                            <button id="refresh-dashboard-btn" class="btn-secondary">🔄 Actualizar</button>
+                            <button id="export-reports-btn" class="btn-primary">📋 Exportar Reportes</button>
+                        </div>
+                    </div>
+                    <div id="dashboard-content"></div>
+                </div>
+
+                <!-- Patients View -->
+                <div id="patients-view" class="view hidden">
+                    <div class="view-header">
+                        <h2>👥 Gestión de Pacientes</h2>
+                        <button id="add-patient-btn" class="btn-primary">➕ Agregar Paciente</button>
+                    </div>
+                    <div id="patients-list" class="cards-grid"></div>
+                </div>
+
+                <!-- Series View -->
+                <div id="series-view" class="view hidden">
+                    <div class="view-header">
+                        <h2>🧘‍♀️ Series Terapéuticas</h2>
+                        <div class="header-actions">
+                            <button class="btn-secondary" onclick="app.showView('create-series')">➕ Crear Nueva Serie</button>
+                        </div>
+                    </div>
+                    <div id="series-list" class="cards-grid"></div>
+                </div>
+
+                <!-- Create Series View -->
+                <div id="create-series-view" class="view hidden">
+                    <div class="view-header">
+                        <h2>➕ Crear Nueva Serie Terapéutica</h2>
+                        <button class="btn-secondary" onclick="app.showView('series')">⬅️ Volver a Series</button>
+                    </div>
+                    <form id="create-series-form" class="form">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="series-name">Nombre de la Serie</label>
+                                <input type="text" id="series-name" required placeholder="Ej: Serie Anti-estrés Nivel 1">
+                            </div>
+                            <div class="form-group">
+                                <label for="total-sessions">Número Total de Sesiones</label>
+                                <input type="number" id="total-sessions" min="1" max="30" required placeholder="10">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="therapy-type">Tipo de Terapia</label>
+                            <select id="therapy-type" required>
+                                <option value="">Seleccionar tipo de terapia</option>
+                                <option value="anxiety">🧠 Ansiedad y Estrés</option>
+                                <option value="arthritis">🦴 Artritis y Rigidez Articular</option>
+                                <option value="back_pain">🔥 Dolor de Espalda</option>
+                            </select>
+                        </div>
+                        
+                        <div id="postures-section" class="hidden">
+                            <div class="section-header">
+                                <h3>🤸‍♀️ Seleccionar Posturas</h3>
+                                <p>Haz clic en las posturas para seleccionarlas y configurar su duración</p>
+                            </div>
+                            <div id="available-postures" class="postures-grid"></div>
+                            
+                            <div class="section-header">
+                                <h3>📝 Posturas Seleccionadas</h3>
+                                <p>Revisa y ajusta la duración de cada postura seleccionada</p>
+                            </div>
+                            <div id="selected-postures" class="postures-list">
+                                <p>Selecciona posturas de la lista anterior</p>
+                            </div>
+                        </div>
+                        
+                        <div class="form-actions">
+                            <button type="button" class="btn-secondary" onclick="app.showView('series')">Cancelar</button>
+                            <button type="submit" class="btn-primary">✅ Crear Serie</button>
+                        </div>
+                    </form>
+                </div>
+            </main>
+        </div>
+
+        <!-- Patient Dashboard -->
+        <div id="patient-dashboard" class="screen hidden">
+            <nav class="navbar">
+                <div class="nav-brand">Yoga Terapéutico Online</div>
+                <div class="nav-user">
+                    <span id="patient-navbar-name"></span>
+                    <button id="patient-logout-btn" class="btn-secondary">Cerrar Sesión</button>
+                </div>
+            </nav>
+
+            <main class="main-content">
+                <div id="patient-home" class="patient-view">
+                    <div class="series-info">
+                        <h2>🧘‍♀️ Mi Serie Asignada</h2>
+                        <div id="series-details"></div>
+                        <button id="start-session-btn" class="btn-primary btn-large">▶️ Iniciar Sesión</button>
+                    </div>
+                </div>
+
+                <div id="session-view" class="patient-view hidden">
+                    <div class="session-container">
+                        <div class="session-header">
+                            <h2>🧘‍♀️ Sesión en Progreso</h2>
+                            <div class="session-progress">
+                                <span id="current-posture">1</span> / <span id="total-postures">1</span>
+                            </div>
+                        </div>
+                        
+                        <div id="pre-session" class="session-stage">
+                            <div class="pre-session-content">
+                                <h3>🎯 Preparación para la Sesión</h3>
+                                <div class="preparation-steps">
+                                    <div class="step">
+                                        <span class="step-icon">🧘‍♀️</span>
+                                        <p>Busca un lugar tranquilo y coloca tu esterilla</p>
+                                    </div>
+                                    <div class="step">
+                                        <span class="step-icon">📱</span>
+                                        <p>Pon tu dispositivo en silencio para evitar distracciones</p>
+                                    </div>
+                                    <div class="step">
+                                        <span class="step-icon">💧</span>
+                                        <p>Ten agua cerca para mantenerte hidratado</p>
+                                    </div>
+                                </div>
+                                
+                                <div class="pain-assessment">
+                                    <h4>📊 Evaluación Inicial</h4>
+                                    <p>Antes de comenzar, indica tu nivel actual de dolor o molestia:</p>
+                                    <div class="pain-scale">
+                                        <label class="scale-label">Sin dolor</label>
+                                        <input type="range" id="pain-before" min="0" max="10" value="0">
+                                        <label class="scale-label">Dolor severo</label>
+                                    </div>
+                                    <div class="pain-value">Nivel actual: <span id="pain-before-value">0</span>/10</div>
+                                </div>
+                                
+                                <button id="start-postures-btn" class="btn-primary btn-large">🚀 Comenzar Posturas</button>
+                            </div>
+                        </div>
+
+                        <div id="posture-display" class="session-stage hidden">
+                            <div class="posture-content">
+                                <div class="video-container">
+                                    <iframe id="posture-video" 
+                                            width="100%" 
+                                            height="315" 
+                                            src="" 
+                                            title="Video tutorial de yoga"
+                                            frameborder="0" 
+                                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                                            allowfullscreen>
+                                    </iframe>
+                                </div>
+                                
+                                <div class="posture-info-panel">
+                                    <div class="posture-header">
+                                        <h3 id="posture-name"></h3>
+                                        <p id="posture-sanskrit" class="sanskrit"></p>
+                                    </div>
+                                    
+                                    <div class="posture-details">
+                                        <div class="detail-section">
+                                            <h4>📝 Instrucciones:</h4>
+                                            <p id="posture-instructions"></p>
+                                        </div>
+                                        <div class="detail-section">
+                                            <h4>✨ Beneficios:</h4>
+                                            <p id="posture-benefits"></p>
+                                        </div>
+                                        <div class="detail-section">
+                                            <h4>🔧 Modificaciones:</h4>
+                                            <p id="posture-modifications"></p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="posture-timer">
+                                <div class="timer-display">
+                                    <div class="timer-circle">
+                                        <span class="timer-text">
+                                            <span id="timer-minutes">00</span>:<span id="timer-seconds">00</span>
+                                        </span>
+                                    </div>
+                                </div>
+                                <div class="timer-controls">
+                                    <button id="pause-timer-btn" class="btn-secondary">⏸️ Pausar</button>
+                                    <button id="next-posture-btn" class="btn-primary">Siguiente Postura ➡️</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="post-session" class="session-stage hidden">
+                            <div class="completion-content">
+                                <div class="completion-header">
+                                    <div class="completion-icon">🎉</div>
+                                    <h3>¡Excelente Sesión Completada!</h3>
+                                    <p>Has terminado todas las posturas de esta sesión.</p>
+                                </div>
+                                
+                                <div class="post-assessment">
+                                    <h4>📊 Evaluación Final</h4>
+                                    <div class="form-group">
+                                        <label>¿Cómo te sientes ahora? Indica tu nivel de dolor/molestia:</label>
+                                        <div class="pain-scale">
+                                            <label class="scale-label">Sin dolor</label>
+                                            <input type="range" id="pain-after" min="0" max="10" value="0">
+                                            <label class="scale-label">Dolor severo</label>
+                                        </div>
+                                        <div class="pain-value">Nivel actual: <span id="pain-after-value">0</span>/10</div>
+                                    </div>
+                                    
+                                    <div class="form-group">
+                                        <label for="session-comments">💭 Comparte tu experiencia:</label>
+                                        <textarea id="session-comments" required placeholder="Describe cómo te sentiste durante y después de la sesión. ¿Notaste alguna mejora? ¿Hubo alguna postura que te resultó especialmente beneficiosa?"></textarea>
+                                    </div>
+                                </div>
+                                
+                                <button id="complete-session-btn" class="btn-primary btn-large">✅ Completar Sesión</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+
+        <!-- Modals -->
+        
+        <!-- Patient Modal -->
+        <div id="patient-modal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 id="patient-modal-title">Agregar Paciente</h3>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <form id="patient-form">
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label for="patient-name">Nombre Completo</label>
+                            <input type="text" id="patient-name" required placeholder="Ej: María García López">
+                        </div>
+                        <div class="form-group">
+                            <label for="patient-email">Email</label>
+                            <input type="email" id="patient-email" required placeholder="maria@email.com">
+                        </div>
+                        <div class="form-group">
+                            <label for="patient-age">Edad</label>
+                            <input type="number" id="patient-age" min="1" max="120" required placeholder="35">
+                        </div>
+                        <div class="form-group">
+                            <label for="patient-condition">Condición/Diagnóstico</label>
+                            <textarea id="patient-condition" placeholder="Describe la condición específica del paciente, síntomas principales y cualquier limitación física..."></textarea>
+                        </div>
+                    </div>
+                    <div class="modal-actions">
+                        <button type="button" class="btn-secondary modal-cancel">Cancelar</button>
+                        <button type="submit" class="btn-primary">💾 Guardar</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Assign Series Modal -->
+        <div id="assign-series-modal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>📋 Asignar Serie Terapéutica</h3>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="assignment-info">
+                        <p>Selecciona una serie terapéutica para asignar al paciente. La serie determinará las posturas y el plan de sesiones.</p>
+                    </div>
+                    <div class="form-group">
+                        <label for="series-select">Serie Disponibles:</label>
+                        <select id="series-select" required>
+                            <option value="">Seleccionar serie</option>
+                        </select>
+                    </div>
+                    <div id="selected-series-preview"></div>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-secondary modal-cancel">Cancelar</button>
+                    <button id="confirm-assign-btn" class="btn-primary">✅ Asignar Serie</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Patient Sessions Modal -->
+        <div id="patient-sessions-modal" class="modal hidden">
+            <div class="modal-content large-modal">
+                <div class="modal-header">
+                    <h3>📊 Historial de Sesiones</h3>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div id="sessions-list"></div>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-secondary modal-cancel">Cerrar</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Patient Details Modal -->
+        <div id="patient-details-modal" class="modal hidden">
+            <div class="modal-content large-modal">
+                <div class="modal-header">
+                    <h3>👤 Detalles del Paciente</h3>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div id="patient-details-content"></div>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-secondary modal-cancel">Cerrar</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Posture Detail Modal -->
+        <div id="posture-detail-modal" class="modal hidden">
+            <div class="modal-content large-modal">
+                <div class="modal-header">
+                    <h3 id="modal-posture-name">Detalles de la Postura</h3>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="posture-detail-content">
+                        <div class="video-container">
+                            <iframe id="modal-posture-video" 
+                                    width="100%" 
+                                    height="315" 
+                                    src="" 
+                                    title="Video tutorial de yoga"
+                                    frameborder="0" 
+                                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                                    allowfullscreen>
+                            </iframe>
+                        </div>
+                        <div class="posture-info-detailed">
+                            <p id="modal-posture-sanskrit" class="sanskrit"></p>
+                            <div class="detail-section">
+                                <h4>📝 Instrucciones:</h4>
+                                <p id="modal-posture-instructions"></p>
+                            </div>
+                            <div class="detail-section">
+                                <h4>✨ Beneficios:</h4>
+                                <p id="modal-posture-benefits"></p>
+                            </div>
+                            <div class="detail-section">
+                                <h4>🔧 Modificaciones:</h4>
+                                <p id="modal-posture-modifications"></p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-secondary modal-cancel">Cerrar</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
