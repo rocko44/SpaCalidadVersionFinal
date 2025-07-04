@@ -595,8 +595,10 @@ class TherapeuticYogaApp {
             </div>
 
             <div class="dashboard-actions">
+                <!--
                 <button id="refresh-dashboard-btn" class="btn-secondary">🔄 Actualizar</button>
                 <button id="export-reports-btn" class="btn-primary">📊 Exportar Reportes</button>
+                -->
             </div>
         `;
 
