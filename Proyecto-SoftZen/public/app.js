@@ -856,8 +856,6 @@ class TherapeuticYogaApp {
                     </div>
                 </div>
                 <div class="card-actions" style="margin-top: 1rem;">
-                    <button class="btn-secondary btn-small" onclick="app.viewSeriesDetails(${series.id})">👁️ Ver Detalles</button>
-                    <button class="btn-secondary btn-small" onclick="app.duplicateSeries(${series.id})">📋 Duplicar</button>
                 </div>
             `;
             container.appendChild(card);
