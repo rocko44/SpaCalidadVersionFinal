@@ -1,3 +1,106 @@
+// Sweet Alert Helper Functions
+const SweetAlerts = {
+    // Success alerts
+    success: (title, text, options = {}) => {
+        return Swal.fire({
+            icon: 'success',
+            title: title,
+            text: text,
+            confirmButtonText: 'Entendido',
+            timer: options.timer || null,
+            showConfirmButton: !options.timer,
+            ...options
+        });
+    },
+
+    // Error alerts
+    error: (title, text, options = {}) => {
+        return Swal.fire({
+            icon: 'error',
+            title: title,
+            text: text,
+            confirmButtonText: 'Entendido',
+            ...options
+        });
+    },
+
+    // Warning alerts
+    warning: (title, text, options = {}) => {
+        return Swal.fire({
+            icon: 'warning',
+            title: title,
+            text: text,
+            confirmButtonText: 'Entendido',
+            ...options
+        });
+    },
+
+    // Info alerts
+    info: (title, text, options = {}) => {
+        return Swal.fire({
+            icon: 'info',
+            title: title,
+            text: text,
+            confirmButtonText: 'Entendido',
+            ...options
+        });
+    },
+
+    // Confirmation dialogs
+    confirm: (title, text, options = {}) => {
+        return Swal.fire({
+            icon: 'question',
+            title: title,
+            text: text,
+            showCancelButton: true,
+            confirmButtonText: options.confirmText || 'Sí, continuar',
+            cancelButtonText: options.cancelText || 'Cancelar',
+            reverseButtons: true,
+            ...options
+        });
+    },
+
+    // Toast notifications
+    toast: (icon, title, position = 'top-end') => {
+        return Swal.fire({
+            toast: true,
+            position: position,
+            icon: icon,
+            title: title,
+            showConfirmButton: false,
+            timer: 3000,
+            timerProgressBar: true,
+            didOpen: (toast) => {
+                toast.addEventListener('mouseenter', Swal.stopTimer)
+                toast.addEventListener('mouseleave', Swal.resumeTimer)
+            }
+        });
+    },
+
+    // Loading alert
+    loading: (title = 'Procesando...') => {
+        return Swal.fire({
+            title: title,
+            allowOutsideClick: false,
+            didOpen: () => {
+                Swal.showLoading();
+            }
+        });
+    },
+
+    // Auto-closing success with custom HTML
+    successWithDetails: (title, details, options = {}) => {
+        return Swal.fire({
+            icon: 'success',
+            title: title,
+            html: details,
+            confirmButtonText: 'Excelente',
+            timer: options.timer || null,
+            ...options
+        });
+    }
+};
+
 class TherapeuticYogaApp {
     constructor() {
         this.currentUser = null;
@@ -142,6 +245,9 @@ class TherapeuticYogaApp {
         const email = formData.get('email') || document.getElementById('login-email').value;
         const password = formData.get('password') || document.getElementById('login-password').value;
 
+        // Show loading
+        SweetAlerts.loading('Iniciando sesión...');
+
         try {
             const response = await fetch('/api/login', {
                 method: 'POST',
@@ -150,17 +256,31 @@ class TherapeuticYogaApp {
             });
 
             const data = await response.json();
+            
             if (response.ok) {
                 this.token = data.token;
                 this.currentUser = data.user;
                 localStorage.setItem('token', this.token);
                 localStorage.setItem('user', JSON.stringify(this.currentUser));
+                
+                await SweetAlerts.success(
+                    '¡Bienvenido!', 
+                    `Inicio de sesión exitoso. Hola ${this.currentUser.name}`,
+                    { timer: 2000 }
+                );
+                
                 this.showDashboard();
             } else {
-                alert(data.error || 'Error al iniciar sesión');
+                await SweetAlerts.error(
+                    'Error de autenticación',
+                    data.error || 'Credenciales incorrectas. Por favor, verifica tu email y contraseña.'
+                );
             }
         } catch (error) {
-            alert('Error de conexión');
+            await SweetAlerts.error(
+                'Error de conexión',
+                'No se pudo conectar con el servidor. Verifica tu conexión a internet.'
+            );
         }
     }
 
@@ -171,6 +291,9 @@ class TherapeuticYogaApp {
         const password = document.getElementById('register-password').value;
         const role = document.getElementById('register-role').value;
 
+        // Show loading
+        SweetAlerts.loading('Creando cuenta...');
+
         try {
             const response = await fetch('/api/register', {
                 method: 'POST',
@@ -179,8 +302,22 @@ class TherapeuticYogaApp {
             });
 
             const data = await response.json();
+            
             if (response.ok) {
-                alert('✅ Registro exitoso! Por favor, inicia sesión con tus credenciales.');
+                await SweetAlerts.successWithDetails(
+                    '¡Registro exitoso!',
+                    `
+                    <div style="text-align: left; margin: 1rem 0;">
+                        <p><strong>🎉 Cuenta creada correctamente</strong></p>
+                        <p>• Usuario: ${name}</p>
+                        <p>• Email: ${email}</p>
+                        <p>• Rol: ${role === 'instructor' ? 'Instructor' : 'Paciente'}</p>
+                        <br>
+                        <p style="color: #667eea;">Ahora puedes iniciar sesión con tus credenciales.</p>
+                    </div>
+                    `
+                );
+                
                 document.getElementById('register-form').reset();
                 document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
                 document.querySelector('.tab-btn[data-tab="login"]').classList.add('active');
@@ -188,21 +325,42 @@ class TherapeuticYogaApp {
                 document.getElementById('register-form').classList.add('hidden');
                 document.getElementById('login-email').value = email;
             } else {
-                alert(data.error || 'Error al registrarse');
+                await SweetAlerts.error(
+                    'Error en el registro',
+                    data.error || 'No se pudo crear la cuenta. Intenta nuevamente.'
+                );
             }
         } catch (error) {
-            alert('Error de conexión');
+            await SweetAlerts.error(
+                'Error de conexión',
+                'No se pudo conectar con el servidor. Verifica tu conexión a internet.'
+            );
         }
     }
 
-    logout() {
-        this.token = null;
-        this.currentUser = null;
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
-        this.showAuth();
-        if (this.sessionTimer) {
-            clearInterval(this.sessionTimer);
+    async logout() {
+        const result = await SweetAlerts.confirm(
+            '¿Cerrar sesión?',
+            '¿Estás seguro de que quieres cerrar sesión?',
+            {
+                confirmText: 'Sí, cerrar sesión',
+                cancelText: 'Cancelar'
+            }
+        );
+
+        if (result.isConfirmed) {
+            this.token = null;
+            this.currentUser = null;
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            
+            if (this.sessionTimer) {
+                clearInterval(this.sessionTimer);
+            }
+            
+            this.showAuth();
+            
+            SweetAlerts.toast('success', 'Sesión cerrada correctamente');
         }
     }
 
@@ -259,6 +417,10 @@ class TherapeuticYogaApp {
             }
         } catch (error) {
             console.error('Error loading patients:', error);
+            SweetAlerts.error(
+                'Error al cargar pacientes',
+                'No se pudieron cargar los datos de los pacientes.'
+            );
         }
     }
 
@@ -271,6 +433,10 @@ class TherapeuticYogaApp {
             }
         } catch (error) {
             console.error('Error loading series:', error);
+            SweetAlerts.error(
+                'Error al cargar series',
+                'No se pudieron cargar las series terapéuticas.'
+            );
         }
     }
 
@@ -292,6 +458,10 @@ class TherapeuticYogaApp {
             }
         } catch (error) {
             console.error('Error loading dashboard:', error);
+            SweetAlerts.error(
+                'Error al cargar dashboard',
+                'No se pudieron cargar las estadísticas del dashboard.'
+            );
         }
     }
 
@@ -436,8 +606,9 @@ class TherapeuticYogaApp {
     }
 
     async refreshDashboard() {
+        SweetAlerts.loading('Actualizando dashboard...');
         await this.loadDashboard();
-        alert('📊 Dashboard actualizado correctamente');
+        SweetAlerts.toast('success', '📊 Dashboard actualizado correctamente');
     }
 
     async exportReports() {
@@ -458,9 +629,12 @@ class TherapeuticYogaApp {
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
 
-            alert('📊 Reporte exportado exitosamente');
+            SweetAlerts.toast('success', '📋 Reporte exportado exitosamente');
         } catch (error) {
-            alert('Error al exportar reporte');
+            SweetAlerts.error(
+                'Error al exportar',
+                'No se pudo generar el reporte. Intenta nuevamente.'
+            );
         }
     }
 
@@ -545,6 +719,10 @@ class TherapeuticYogaApp {
             document.getElementById('patient-details-modal').classList.remove('hidden');
         } catch (error) {
             console.error('Error loading patient details:', error);
+            SweetAlerts.error(
+                'Error al cargar detalles',
+                'No se pudieron cargar los detalles del paciente.'
+            );
         }
     }
 
@@ -612,24 +790,6 @@ class TherapeuticYogaApp {
                             <span class="stat-value ${painStats.avgImprovement >= 0 ? 'positive' : 'negative'}">
                                 ${painStats.avgImprovement >= 0 ? '-' : '+'}${Math.abs(painStats.avgImprovement)}
                             </span>
-                        </div>
-                    </div>
-                    <div class="pain-trend">
-                        <h5>Tendencia de Dolor</h5>
-                        <div class="pain-chart">
-                            ${sessions.slice(-5).map((session, index) => `
-                                <div class="pain-session">
-                                    <div class="session-bars">
-                                        <div class="pain-bar before" style="height: ${session.pain_before * 10}%" title="Antes: ${session.pain_before}"></div>
-                                        <div class="pain-bar after" style="height: ${session.pain_after * 10}%" title="Después: ${session.pain_after}"></div>
-                                    </div>
-                                    <span class="session-label">S${session.session_number}</span>
-                                </div>
-                            `).join('')}
-                        </div>
-                        <div class="chart-legend">
-                            <span class="legend-item"><span class="legend-color before"></span> Antes</span>
-                            <span class="legend-item"><span class="legend-color after"></span> Después</span>
                         </div>
                     </div>
                 ` : `
@@ -733,7 +893,10 @@ class TherapeuticYogaApp {
         const conditionField = document.getElementById('patient-condition');
 
         if (!nameField || !emailField || !ageField || !conditionField) {
-            alert('Error interno: campos no encontrados.');
+            SweetAlerts.error(
+                'Error interno',
+                'No se pudieron encontrar todos los campos del formulario.'
+            );
             return;
         }
 
@@ -741,6 +904,25 @@ class TherapeuticYogaApp {
         const email = emailField.value.trim();
         const age = parseInt(ageField.value);
         const condition = conditionField.value.trim();
+
+        // Validaciones
+        if (!name || !email || !age) {
+            SweetAlerts.warning(
+                'Campos obligatorios',
+                'Por favor, completa todos los campos obligatorios: nombre, email y edad.'
+            );
+            return;
+        }
+
+        if (age < 1 || age > 120) {
+            SweetAlerts.warning(
+                'Edad inválida',
+                'La edad debe estar entre 1 y 120 años.'
+            );
+            return;
+        }
+
+        SweetAlerts.loading(this.currentPatient ? 'Actualizando paciente...' : 'Creando paciente...');
 
         try {
             let response;
@@ -760,17 +942,34 @@ class TherapeuticYogaApp {
                 this.closeModals();
                 await this.loadPatients();
                 await this.loadDashboard();
-                alert('✅ Paciente guardado exitosamente!');
+                
+                const action = this.currentPatient ? 'actualizado' : 'creado';
+                SweetAlerts.successWithDetails(
+                    `¡Paciente ${action}!`,
+                    `
+                    <div style="text-align: left; margin: 1rem 0;">
+                        <p><strong>👤 ${name}</strong></p>
+                        <p>• Email: ${email}</p>
+                        <p>• Edad: ${age} años</p>
+                        ${condition ? `<p>• Condición: ${condition}</p>` : ''}
+                    </div>
+                    `,
+                    { timer: 3000 }
+                );
             } else {
                 const data = await response.json();
-                alert(data.error || 'Error al guardar paciente');
+                SweetAlerts.error(
+                    'Error al guardar',
+                    data.error || 'No se pudo guardar el paciente. Intenta nuevamente.'
+                );
             }
         } catch (error) {
-            alert('Error de conexión');
+            SweetAlerts.error(
+                'Error de conexión',
+                'No se pudo conectar con el servidor. Verifica tu conexión a internet.'
+            );
         }
     }
-
-
 
     editPatient(patientId) {
         const patient = this.patients.find(p => p.id === patientId);
@@ -780,7 +979,22 @@ class TherapeuticYogaApp {
     }
 
     async deletePatient(patientId) {
-        if (confirm('⚠️ ¿Estás seguro de que quieres eliminar este paciente?\n\nEsta acción no se puede deshacer.')) {
+        const patient = this.patients.find(p => p.id === patientId);
+        if (!patient) return;
+
+        const result = await SweetAlerts.confirm(
+            '¿Eliminar paciente?',
+            `¿Estás seguro de que quieres eliminar a ${patient.name}? Esta acción no se puede deshacer.`,
+            {
+                confirmText: 'Sí, eliminar',
+                cancelText: 'Cancelar',
+                icon: 'warning'
+            }
+        );
+
+        if (result.isConfirmed) {
+            SweetAlerts.loading('Eliminando paciente...');
+            
             try {
                 const response = await this.fetchWithAuth(`/api/patients/${patientId}`, {
                     method: 'DELETE'
@@ -788,14 +1002,21 @@ class TherapeuticYogaApp {
 
                 if (response.ok) {
                     await this.loadPatients();
-                    await this.loadDashboard(); // Actualizar dashboard
-                    alert('✅ Paciente eliminado exitosamente');
+                    await this.loadDashboard();
+                    
+                    SweetAlerts.toast('success', `🗑️ Paciente ${patient.name} eliminado exitosamente`);
                 } else {
                     const data = await response.json();
-                    alert(data.error || 'Error al eliminar paciente');
+                    SweetAlerts.error(
+                        'Error al eliminar',
+                        data.error || 'No se pudo eliminar el paciente. Intenta nuevamente.'
+                    );
                 }
             } catch (error) {
-                alert('Error de conexión');
+                SweetAlerts.error(
+                    'Error de conexión',
+                    'No se pudo conectar con el servidor. Verifica tu conexión a internet.'
+                );
             }
         }
     }
@@ -816,6 +1037,12 @@ class TherapeuticYogaApp {
         if (this.series.length === 0) {
             select.innerHTML = '<option value="">No hay series disponibles</option>';
             select.disabled = true;
+            
+            SweetAlerts.warning(
+                'No hay series disponibles',
+                'Primero debes crear al menos una serie terapéutica antes de asignarla a un paciente.'
+            );
+            return;
         } else {
             select.disabled = false;
             this.series.forEach(series => {
@@ -830,10 +1057,16 @@ class TherapeuticYogaApp {
         const hasSeries = this.currentPatient.assigned_series && typeof this.currentPatient.assigned_series === 'string';
         if (hasSeries) {
             const seriesData = JSON.parse(this.currentPatient.assigned_series);
-            const confirmChange = confirm(
-                `🔄 Este paciente ya tiene asignada la serie "${seriesData.name}".\n¿Deseas reemplazarla con una nueva serie?`
+            const result = await SweetAlerts.confirm(
+                'Reemplazar serie existente',
+                `${this.currentPatient.name} ya tiene asignada la serie "${seriesData.name}". ¿Deseas reemplazarla con una nueva serie?`,
+                {
+                    confirmText: 'Sí, reemplazar',
+                    cancelText: 'Cancelar',
+                    icon: 'question'
+                }
             );
-            if (!confirmChange) return;
+            if (!result.isConfirmed) return;
         }
 
         modal.classList.remove('hidden');
@@ -842,11 +1075,18 @@ class TherapeuticYogaApp {
     async confirmAssignSeries() {
         const seriesId = parseInt(document.getElementById('series-select').value);
         if (!seriesId) {
-            alert('⚠️ Por favor, selecciona una serie antes de continuar.');
+            SweetAlerts.warning(
+                'Serie requerida',
+                'Por favor, selecciona una serie antes de continuar.'
+            );
             return;
         }
 
         if (!this.currentPatient) return;
+
+        const selectedSeries = this.series.find(s => s.id === seriesId);
+        
+        SweetAlerts.loading('Asignando serie...');
 
         try {
             const response = await this.fetchWithAuth(`/api/patients/${this.currentPatient.id}/assign-series`, {
@@ -857,14 +1097,33 @@ class TherapeuticYogaApp {
             if (response.ok) {
                 this.closeModals();
                 await this.loadPatients();
-                await this.loadDashboard(); // Actualizar dashboard
-                alert('✅ Serie asignada exitosamente!');
+                await this.loadDashboard();
+                
+                SweetAlerts.successWithDetails(
+                    '¡Serie asignada!',
+                    `
+                    <div style="text-align: left; margin: 1rem 0;">
+                        <p><strong>👤 Paciente:</strong> ${this.currentPatient.name}</p>
+                        <p><strong>🧘‍♀️ Serie:</strong> ${selectedSeries.name}</p>
+                        <p><strong>🎯 Tipo:</strong> ${this.getTherapyTypeName(selectedSeries.therapy_type)}</p>
+                        <p><strong>🤸‍♀️ Posturas:</strong> ${selectedSeries.postures.length}</p>
+                        <p><strong>📅 Sesiones:</strong> ${selectedSeries.total_sessions}</p>
+                    </div>
+                    `,
+                    { timer: 4000 }
+                );
             } else {
                 const data = await response.json();
-                alert(data.error || 'Error al asignar serie');
+                SweetAlerts.error(
+                    'Error al asignar serie',
+                    data.error || 'No se pudo asignar la serie. Intenta nuevamente.'
+                );
             }
         } catch (error) {
-            alert('Error de conexión');
+            SweetAlerts.error(
+                'Error de conexión',
+                'No se pudo conectar con el servidor. Verifica tu conexión a internet.'
+            );
         }
     }
 
@@ -878,6 +1137,10 @@ class TherapeuticYogaApp {
             }
         } catch (error) {
             console.error('Error loading patient sessions:', error);
+            SweetAlerts.error(
+                'Error al cargar sesiones',
+                'No se pudieron cargar las sesiones del paciente.'
+            );
         }
     }
 
@@ -1030,6 +1293,31 @@ class TherapeuticYogaApp {
         const selectedCards = document.querySelectorAll('.posture-card.selected');
         const postures = [];
 
+        // Validaciones
+        if (!name.trim()) {
+            SweetAlerts.warning(
+                'Nombre requerido',
+                'Por favor, ingresa un nombre para la serie.'
+            );
+            return;
+        }
+
+        if (!therapyType) {
+            SweetAlerts.warning(
+                'Tipo de terapia requerido',
+                'Por favor, selecciona un tipo de terapia.'
+            );
+            return;
+        }
+
+        if (selectedCards.length === 0) {
+            SweetAlerts.warning(
+                'Posturas requeridas',
+                'Debes seleccionar al menos una postura para la serie.'
+            );
+            return;
+        }
+
         selectedCards.forEach(card => {
             const postureId = parseInt(card.dataset.postureId);
             const durationInput = document.querySelector(`input[data-posture-id="${postureId}"]`);
@@ -1044,10 +1332,7 @@ class TherapeuticYogaApp {
             });
         });
 
-        if (postures.length === 0) {
-            alert('⚠️ Selecciona al menos una postura');
-            return;
-        }
+        SweetAlerts.loading('Creando serie...');
 
         try {
             const response = await this.fetchWithAuth('/api/therapy-series', {
@@ -1056,17 +1341,37 @@ class TherapeuticYogaApp {
             });
 
             if (response.ok) {
-                alert('✅ Serie creada exitosamente!');
                 document.getElementById('create-series-form').reset();
                 document.getElementById('postures-section').classList.add('hidden');
                 await this.loadSeries();
-                await this.loadDashboard(); // Actualizar dashboard
+                await this.loadDashboard();
+                
+                SweetAlerts.successWithDetails(
+                    '¡Serie creada exitosamente!',
+                    `
+                    <div style="text-align: left; margin: 1rem 0;">
+                        <p><strong>🧘‍♀️ ${name}</strong></p>
+                        <p>• Tipo: ${this.getTherapyTypeName(therapyType)}</p>
+                        <p>• Posturas: ${postures.length}</p>
+                        <p>• Sesiones totales: ${totalSessions}</p>
+                        <br>
+                        <p style="color: #667eea;">Ya puedes asignar esta serie a tus pacientes.</p>
+                    </div>
+                    `,
+                    { timer: 4000 }
+                );
             } else {
                 const data = await response.json();
-                alert(data.error || 'Error al crear serie');
+                SweetAlerts.error(
+                    'Error al crear serie',
+                    data.error || 'No se pudo crear la serie. Intenta nuevamente.'
+                );
             }
         } catch (error) {
-            alert('Error de conexión');
+            SweetAlerts.error(
+                'Error de conexión',
+                'No se pudo conectar con el servidor. Verifica tu conexión a internet.'
+            );
         }
     }
 
@@ -1083,6 +1388,10 @@ class TherapeuticYogaApp {
             }
         } catch (error) {
             console.error('Error loading patient data:', error);
+            SweetAlerts.error(
+                'Error al cargar datos',
+                'No se pudieron cargar los datos de tu serie asignada.'
+            );
         }
     }
 
@@ -1134,15 +1443,29 @@ class TherapeuticYogaApp {
         document.getElementById('start-session-btn').style.display = isCompleted ? 'none' : 'block';
     }
 
-    startSession() {
-        document.getElementById('patient-home').classList.add('hidden');
-        document.getElementById('session-view').classList.remove('hidden');
-        document.getElementById('pre-session').classList.remove('hidden');
-        document.getElementById('posture-display').classList.add('hidden');
-        document.getElementById('post-session').classList.add('hidden');
+    async startSession() {
+        const result = await SweetAlerts.confirm(
+            '¿Iniciar sesión de yoga?',
+            '¿Estás listo para comenzar tu sesión de yoga terapéutico? Asegúrate de estar en un lugar tranquilo.',
+            {
+                confirmText: 'Sí, comenzar',
+                cancelText: 'Ahora no',
+                icon: 'question'
+            }
+        );
+
+        if (result.isConfirmed) {
+            document.getElementById('patient-home').classList.add('hidden');
+            document.getElementById('session-view').classList.remove('hidden');
+            document.getElementById('pre-session').classList.remove('hidden');
+            document.getElementById('posture-display').classList.add('hidden');
+            document.getElementById('post-session').classList.add('hidden');
+            
+            SweetAlerts.toast('info', '🧘‍♀️ ¡Sesión iniciada! Prepárate para comenzar');
+        }
     }
 
-    startPostures() {
+    async startPostures() {
         this.currentSessionData.painBefore = parseInt(document.getElementById('pain-before').value);
         this.currentPostureIndex = 0;
         this.timerPaused = false;
@@ -1152,6 +1475,8 @@ class TherapeuticYogaApp {
 
         document.getElementById('total-postures').textContent = this.currentSeries.postures.length;
         this.showCurrentPosture();
+        
+        SweetAlerts.toast('success', '🚀 ¡Comenzando con las posturas!');
     }
 
     showCurrentPosture() {
@@ -1214,6 +1539,7 @@ class TherapeuticYogaApp {
                 pauseBtn.style.display = 'none';
 
                 this.playCompletionSound();
+                SweetAlerts.toast('success', '⏰ ¡Tiempo completado para esta postura!');
             }
         };
 
@@ -1227,8 +1553,10 @@ class TherapeuticYogaApp {
 
         if (this.timerPaused) {
             pauseBtn.textContent = '▶️ Reanudar';
+            SweetAlerts.toast('info', '⏸️ Temporizador pausado');
         } else {
             pauseBtn.textContent = '⏸️ Pausar';
+            SweetAlerts.toast('info', '▶️ Temporizador reanudado');
         }
     }
 
@@ -1265,8 +1593,10 @@ class TherapeuticYogaApp {
         if (this.currentPostureIndex >= this.currentSeries.postures.length) {
             document.getElementById('posture-display').classList.add('hidden');
             document.getElementById('post-session').classList.remove('hidden');
+            SweetAlerts.toast('success', '🎉 ¡Todas las posturas completadas!');
         } else {
             this.showCurrentPosture();
+            SweetAlerts.toast('info', `➡️ Postura ${this.currentPostureIndex + 1} de ${this.currentSeries.postures.length}`);
         }
     }
 
@@ -1275,9 +1605,22 @@ class TherapeuticYogaApp {
         const comments = document.getElementById('session-comments').value;
 
         if (!comments.trim()) {
-            alert('⚠️ Por favor, escribe un comentario sobre la sesión');
+            SweetAlerts.warning(
+                'Comentario requerido',
+                'Por favor, escribe un comentario sobre tu experiencia en la sesión.'
+            );
             return;
         }
+
+        if (comments.trim().length < 10) {
+            SweetAlerts.warning(
+                'Comentario muy corto',
+                'Por favor, describe tu experiencia con al menos 10 caracteres.'
+            );
+            return;
+        }
+
+        SweetAlerts.loading('Completando sesión...');
 
         try {
             const response = await this.fetchWithAuth('/api/sessions', {
@@ -1291,30 +1634,58 @@ class TherapeuticYogaApp {
 
             if (response.ok) {
                 const painImprovement = this.currentSessionData.painBefore - painAfter;
-                let message = '🎉 ¡Sesión completada exitosamente!\n\n';
+                let improvementMessage = '';
+                let improvementIcon = '';
 
                 if (painImprovement > 0) {
-                    message += `✨ ¡Excelente! Tu nivel de dolor se redujo en ${painImprovement} puntos.`;
+                    improvementMessage = `¡Excelente! Tu nivel de dolor se redujo en ${painImprovement} puntos.`;
+                    improvementIcon = '📉✨';
                 } else if (painImprovement < 0) {
-                    message += `💪 Aunque el dolor aumentó ligeramente, seguir practicando traerá beneficios.`;
+                    improvementMessage = `Aunque el dolor aumentó ligeramente, seguir practicando traerá beneficios.`;
+                    improvementIcon = '💪🔄';
                 } else {
-                    message += `🎯 Mantuviste tu nivel de dolor estable. ¡Sigue así!`;
+                    improvementMessage = `Mantuviste tu nivel de dolor estable. ¡Sigue así!`;
+                    improvementIcon = '🎯⚖️';
                 }
 
-                alert(message);
+                await SweetAlerts.successWithDetails(
+                    '🎉 ¡Sesión completada!',
+                    `
+                    <div style="text-align: left; margin: 1rem 0;">
+                        <p><strong>${improvementIcon} Resultado:</strong></p>
+                        <p>${improvementMessage}</p>
+                        <br>
+                        <p><strong>📊 Resumen:</strong></p>
+                        <p>• Dolor antes: ${this.currentSessionData.painBefore}/10</p>
+                        <p>• Dolor después: ${painAfter}/10</p>
+                        <p>• Posturas completadas: ${this.currentSeries.postures.length}</p>
+                        <br>
+                        <p style="color: #667eea;">¡Continúa con tu progreso en la próxima sesión!</p>
+                    </div>
+                    `,
+                    { timer: 5000 }
+                );
+
                 document.getElementById('session-view').classList.add('hidden');
                 document.getElementById('patient-home').classList.remove('hidden');
                 await this.loadPatientData();
 
+                // Reset form
                 document.getElementById('session-comments').value = '';
                 document.getElementById('pain-after').value = 0;
                 document.getElementById('pain-after-value').textContent = '0';
             } else {
                 const data = await response.json();
-                alert(data.error || 'Error al completar sesión');
+                SweetAlerts.error(
+                    'Error al completar sesión',
+                    data.error || 'No se pudo completar la sesión. Intenta nuevamente.'
+                );
             }
         } catch (error) {
-            alert('Error de conexión');
+            SweetAlerts.error(
+                'Error de conexión',
+                'No se pudo conectar con el servidor. Verifica tu conexión a internet.'
+            );
         }
     }
 

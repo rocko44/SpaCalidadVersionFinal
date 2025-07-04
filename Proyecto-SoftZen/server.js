@@ -16,11 +16,11 @@ const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'therapeutic-yoga-secret-key';
 
 // Configuración de PostgreSQL para Railway
+const isProduction = process.env.NODE_ENV === 'production';
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false // Necesario para Railway
-  }
+  ssl: isProduction ? { rejectUnauthorized: false } : false
 });
 
 // Cache en memoria para optimización
@@ -51,7 +51,7 @@ const cacheMiddleware = (duration = CACHE_DURATION) => {
     }
 
     const originalSend = res.json;
-    res.json = function(data) {
+    res.json = function (data) {
       cache.set(key, { data, timestamp: Date.now() });
       originalSend.call(this, data);
     };
@@ -776,7 +776,7 @@ app.post('/api/patients/:id/assign-series', authenticateToken, async (req, res) 
     // Crear notificación para el paciente si está registrado
     const patientUserResult = await query('SELECT id FROM users WHERE email = $1', [patient.email]);
     const patientUser = patientUserResult.rows[0];
-    
+
     if (patientUser) {
       await query(`
         INSERT INTO notifications (user_id, type, title, message) 
