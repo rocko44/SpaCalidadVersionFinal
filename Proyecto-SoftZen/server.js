@@ -223,11 +223,49 @@ app.post('/api/register', async (req, res) => {
       });
     }
 
+
+
+
+
+
+
+
     if (password.length < 6) {
       return res.status(400).json({
         error: 'La contraseña debe tener al menos 6 caracteres'
       });
     }
+
+    // Verificar que tenga al menos una mayúscula
+    if (!/[A-Z]/.test(password)) {
+      return res.status(400).json({
+        error: 'La contraseña debe contener al menos una letra mayúscula'
+      });
+    }
+
+    // Verificar que tenga al menos un número
+    if (!/[0-9]/.test(password)) {
+      return res.status(400).json({
+        error: 'La contraseña debe contener al menos un número'
+      });
+    }
+
+    // Verificar que tenga al menos un carácter especial
+    if (!/[!@#$%^&*(),.?":{}|<>]/.test(password)) {
+      return res.status(400).json({
+        error: 'La contraseña debe contener al menos un carácter especial'
+      });
+    }
+
+
+
+
+
+
+
+
+
+
 
     const existingUser = await query('SELECT id FROM users WHERE email = $1', [email]);
     if (existingUser.rows.length > 0) {
