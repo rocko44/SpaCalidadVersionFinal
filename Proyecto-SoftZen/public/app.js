@@ -1277,7 +1277,7 @@ class TherapeuticYogaApp {
                 <span>${index + 1}. ${posture.name}</span>
                 <div class="posture-duration">
                     <label>Duración:</label>
-                    <input type="number" min="1" max="60" value="5" data-posture-id="${postureId}"> min
+                    <input type="number" min="1" max="20" value="1" data-posture-id="${postureId}"> min
                 </div>
             `;
             container.appendChild(div);
