@@ -20,12 +20,81 @@ const isProduction = process.env.NODE_ENV === 'production';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: isProduction ? { rejectUnauthorized: false } : false
+  ssl: isProduction ? { rejectUnauthorized: false } : false,
+  // ✅ NUEVO: Configuración robusta de conexión
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
+  query_timeout: 30000,
+  keepAlive: true
 });
 
 // Cache en memoria para optimización
 const cache = new Map();
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutos
+
+// ✅ NUEVO: Sistema de manejo de errores de red y reintentos
+class NetworkError extends Error {
+  constructor(message, isRetryable = true, statusCode = 500) {
+    super(message);
+    this.name = 'NetworkError';
+    this.isRetryable = isRetryable;
+    this.statusCode = statusCode;
+  }
+}
+
+// ✅ NUEVO: Configuración de reintentos
+const RETRY_CONFIG = {
+  maxRetries: 3,
+  baseDelay: 1000, // 1 segundo
+  maxDelay: 5000,  // 5 segundos
+  backoffMultiplier: 2
+};
+
+// ✅ NUEVO: Función de reintento con backoff exponencial
+const retryWithBackoff = async (fn, retries = RETRY_CONFIG.maxRetries) => {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      // Determinar si el error es reintentable
+      const isRetryable = 
+        error.code === 'ECONNRESET' ||
+        error.code === 'ENOTFOUND' ||
+        error.code === 'ECONNREFUSED' ||
+        error.code === 'ETIMEDOUT' ||
+        error.message?.includes('timeout') ||
+        error.message?.includes('connection') ||
+        (error.statusCode >= 500 && error.statusCode < 600);
+
+      if (!isRetryable || attempt === retries) {
+        throw new NetworkError(
+          `${error.message} (Intento ${attempt + 1}/${retries + 1})`,
+          isRetryable,
+          error.statusCode || 500
+        );
+      }
+
+      // Calcular delay con backoff exponencial
+      const delay = Math.min(
+        RETRY_CONFIG.baseDelay * Math.pow(RETRY_CONFIG.backoffMultiplier, attempt),
+        RETRY_CONFIG.maxDelay
+      );
+
+      console.warn(`Reintentando en ${delay}ms (Intento ${attempt + 1}/${retries + 1}):`, error.message);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+};
+
+// ✅ NUEVO: Pool de conexiones con manejo de errores mejorado
+pool.on('error', (err) => {
+  console.error('PostgreSQL pool error:', err);
+});
+
+pool.on('connect', () => {
+  console.log('Nueva conexión PostgreSQL establecida');
+});
 
 // =============================================
 // SISTEMA DE VALIDACIONES ROBUSTO
@@ -365,6 +434,35 @@ const validators = {
   }
 };
 
+// ✅ NUEVO: Middleware de timeout para requests
+const timeoutMiddleware = (timeout = 30000) => {
+  return (req, res, next) => {
+    req.setTimeout(timeout, () => {
+      if (!res.headersSent) {
+        res.status(408).json({ 
+          error: 'Request timeout', 
+          message: 'La operación tardó demasiado tiempo. Inténtalo de nuevo.',
+          retryable: true 
+        });
+      }
+    });
+    next();
+  };
+};
+
+// ✅ NUEVO: Middleware de manejo de errores de red mejorado
+const handleNetworkError = (error, req, res, next) => {
+  if (error instanceof NetworkError) {
+    return res.status(error.statusCode).json({
+      error: error.message,
+      type: 'network_error',
+      retryable: error.isRetryable,
+      retry_after: error.isRetryable ? Math.ceil(RETRY_CONFIG.baseDelay / 1000) : null
+    });
+  }
+  next(error);
+};
+
 // Middleware de manejo de errores de validación
 const handleValidationError = (error, req, res, next) => {
   if (error instanceof ValidationError) {
@@ -382,7 +480,8 @@ const handleValidationError = (error, req, res, next) => {
 // RESTO DEL CÓDIGO ORIGINAL CON VALIDACIONES APLICADAS
 // =============================================
 
-// Middleware optimizado
+// ✅ NUEVO: Middleware optimizado con timeout
+app.use(timeoutMiddleware()); // Aplicar timeout global
 app.use(cors({
   origin: ['http://localhost:3001', 'http://127.0.0.1:3001'],
   credentials: true
@@ -515,58 +614,84 @@ async function initDatabase() {
   }
 }
 
-// Función para ejecutar consultas (wrapper para manejo de errores)
+// ✅ NUEVO: Función para ejecutar consultas con reintentos y timeouts
 const query = async (sql, params = []) => {
-  const client = await pool.connect();
-  try {
-    const result = await client.query(sql, params);
-    return result;
-  } finally {
-    client.release();
-  }
+  return await retryWithBackoff(async () => {
+    const client = await pool.connect();
+    try {
+      // ✅ NUEVO: Timeout personalizado para consultas
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Query timeout')), 15000);
+      });
+      
+      const queryPromise = client.query(sql, params);
+      const result = await Promise.race([queryPromise, timeoutPromise]);
+      return result;
+    } finally {
+      client.release();
+    }
+  });
 };
 
-// Función para registrar eventos de analytics
+// Función para registrar eventos de analytics CON REINTENTOS
 const logAnalyticsEvent = async (userId, eventType, eventData = {}) => {
   try {
-    await query(
-      'INSERT INTO analytics_events (user_id, event_type, event_data) VALUES ($1, $2, $3)',
-      [userId, eventType, JSON.stringify(eventData)]
-    );
+    // ✅ NUEVO: Analytics con reintento pero sin bloquear el flujo principal
+    setTimeout(async () => {
+      try {
+        await retryWithBackoff(
+          () => query(
+            'INSERT INTO analytics_events (user_id, event_type, event_data) VALUES ($1, $2, $3)',
+            [userId, eventType, JSON.stringify(eventData)]
+          ),
+          1 // Solo 1 reintento para analytics
+        );
+      } catch (error) {
+        console.warn('Analytics event failed after retries:', error.message);
+      }
+    }, 0);
   } catch (error) {
-    console.error('Analytics logging error:', error);
+    // No bloquear el flujo principal por errores de analytics
+    console.warn('Analytics logging error:', error);
   }
 };
 
-// Authentication middleware
+// ✅ NUEVO: Authentication middleware con manejo de errores mejorado
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
-    return res.status(401).json({ error: 'Access token required' });
+    return res.status(401).json({ 
+      error: 'Access token required',
+      type: 'auth_error',
+      retryable: false 
+    });
   }
 
   jwt.verify(token, JWT_SECRET, async (err, user) => {
     if (err) {
-      return res.status(403).json({ error: 'Invalid token' });
+      const isExpired = err.name === 'TokenExpiredError';
+      return res.status(403).json({ 
+        error: isExpired ? 'Token expired' : 'Invalid token',
+        type: 'auth_error',
+        expired: isExpired,
+        retryable: false 
+      });
     }
     req.user = user;
 
-    try {
-      await logAnalyticsEvent(user.id, 'api_request', {
-        endpoint: req.originalUrl,
-        method: req.method
-      });
-    } catch (error) {
-      // Continue without analytics
-    }
+    // Analytics no bloqueante
+    logAnalyticsEvent(user.id, 'api_request', {
+      endpoint: req.originalUrl,
+      method: req.method
+    });
 
     next();
   });
 };
 
-// Auth routes CON VALIDACIONES ROBUSTAS
+// Auth routes CON VALIDACIONES ROBUSTAS Y MANEJO DE ERRORES DE RED
 app.post('/api/register', async (req, res) => {
   try {
     const { email, password, name, role } = req.body;
@@ -577,21 +702,26 @@ app.post('/api/register', async (req, res) => {
     const validatedName = validators.validateName(name);
     const validatedRole = validators.validateUserRole(role);
 
-    // Verificar que el usuario no exista
-    const existingUser = await query('SELECT id FROM users WHERE email = $1', [validatedEmail]);
+    // ✅ NUEVO: Verificar usuario existente con reintentos
+    const existingUser = await retryWithBackoff(
+      () => query('SELECT id FROM users WHERE email = $1', [validatedEmail])
+    );
+    
     if (existingUser.rows.length > 0) {
       throw new ValidationError('Ya existe un usuario con este email', 'email', 'DUPLICATE_EMAIL');
     }
 
     const hashedPassword = await bcrypt.hash(validatedPassword, 12);
 
-    const result = await query(
-      'INSERT INTO users (email, password, name, role) VALUES ($1, $2, $3, $4) RETURNING id, email, name, role',
-      [validatedEmail, hashedPassword, validatedName, validatedRole]
+    // ✅ NUEVO: Inserción con reintentos
+    const result = await retryWithBackoff(
+      () => query(
+        'INSERT INTO users (email, password, name, role) VALUES ($1, $2, $3, $4) RETURNING id, email, name, role',
+        [validatedEmail, hashedPassword, validatedName, validatedRole]
+      )
     );
 
     const user = result.rows[0];
-
     await logAnalyticsEvent(user.id, 'user_registered', { role: user.role });
 
     const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
@@ -613,8 +743,20 @@ app.post('/api/register', async (req, res) => {
       });
     }
     
+    if (error instanceof NetworkError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        type: 'network_error',
+        retryable: error.isRetryable
+      });
+    }
+    
     console.error('Registration error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
+    res.status(500).json({ 
+      error: 'Error del servidor',
+      type: 'server_error',
+      retryable: true 
+    });
   }
 });
 
@@ -629,20 +771,22 @@ app.post('/api/login', async (req, res) => {
       throw new ValidationError('La contraseña es obligatoria', 'password', 'REQUIRED');
     }
 
-    const userResult = await query('SELECT * FROM users WHERE email = $1 AND is_active = TRUE', [validatedEmail]);
+    // ✅ NUEVO: Login con reintentos
+    const userResult = await retryWithBackoff(
+      () => query('SELECT * FROM users WHERE email = $1 AND is_active = TRUE', [validatedEmail])
+    );
     const user = userResult.rows[0];
 
     if (!user || !await bcrypt.compare(password, user.password)) {
       throw new ValidationError('Credenciales inválidas', 'credentials', 'INVALID_CREDENTIALS');
     }
 
-    await query('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1', [user.id]);
+    // ✅ NUEVO: Actualizar last_login con reintentos
+    await retryWithBackoff(
+      () => query('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1', [user.id])
+    );
 
-    try {
-      await logAnalyticsEvent(user.id, 'user_login', { timestamp: new Date().toISOString() });
-    } catch (error) {
-      // Continue without analytics
-    }
+    await logAnalyticsEvent(user.id, 'user_login', { timestamp: new Date().toISOString() });
 
     const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
 
@@ -662,19 +806,32 @@ app.post('/api/login', async (req, res) => {
       });
     }
     
+    if (error instanceof NetworkError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        type: 'network_error',
+        retryable: error.isRetryable
+      });
+    }
+    
     console.error('Login error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
+    res.status(500).json({ 
+      error: 'Error del servidor',
+      type: 'server_error',
+      retryable: true 
+    });
   }
 });
 
-// Patient routes CON VALIDACIONES ROBUSTAS
+// Patient routes CON VALIDACIONES ROBUSTAS Y MANEJO DE RED
 app.get('/api/patients', authenticateToken, cacheMiddleware(), async (req, res) => {
   try {
     if (req.user.role !== 'instructor') {
       return res.status(403).json({ error: 'Acceso denegado' });
     }
 
-    const patientsResult = await query(`
+    // ✅ NUEVO: Query con reintentos
+    const patientsResult = await retryWithBackoff(() => query(`
       SELECT p.*, 
              COUNT(s.id) as total_sessions_completed,
              AVG(s.pain_before - s.pain_after) as avg_pain_improvement
@@ -683,7 +840,7 @@ app.get('/api/patients', authenticateToken, cacheMiddleware(), async (req, res) 
       WHERE p.instructor_id = $1 AND p.is_active = TRUE
       GROUP BY p.id
       ORDER BY p.created_at DESC
-    `, [req.user.id]);
+    `, [req.user.id]));
 
     const patientsWithSeries = patientsResult.rows.map(patient => ({
       ...patient,
@@ -692,8 +849,20 @@ app.get('/api/patients', authenticateToken, cacheMiddleware(), async (req, res) 
 
     res.json(patientsWithSeries);
   } catch (error) {
+    if (error instanceof NetworkError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        type: 'network_error',
+        retryable: error.isRetryable
+      });
+    }
+    
     console.error('Get patients error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
+    res.status(500).json({ 
+      error: 'Error del servidor',
+      type: 'server_error',
+      retryable: true 
+    });
   }
 });
 
@@ -711,20 +880,21 @@ app.post('/api/patients', authenticateToken, async (req, res) => {
     const validatedAge = validators.validateAge(age, 'edad del paciente');
     const validatedCondition = validators.validateMedicalCondition(condition, 'condición médica');
 
-    // Verificar que no exista otro paciente con el mismo email para este instructor
-    const existingPatient = await query(
+    // ✅ NUEVO: Verificación con reintentos
+    const existingPatient = await retryWithBackoff(() => query(
       'SELECT id FROM patients WHERE email = $1 AND instructor_id = $2 AND is_active = TRUE', 
       [validatedEmail, req.user.id]
-    );
+    ));
     
     if (existingPatient.rows.length > 0) {
       throw new ValidationError('Ya tienes un paciente registrado con este email', 'email', 'DUPLICATE_PATIENT_EMAIL');
     }
 
-    const result = await query(
+    // ✅ NUEVO: Inserción con reintentos
+    const result = await retryWithBackoff(() => query(
       'INSERT INTO patients (name, email, age, condition, instructor_id) VALUES ($1, $2, $3, $4, $5) RETURNING *',
       [validatedName, validatedEmail, validatedAge, validatedCondition, req.user.id]
-    );
+    ));
 
     const patient = result.rows[0];
 
@@ -751,8 +921,20 @@ app.post('/api/patients', authenticateToken, async (req, res) => {
       });
     }
     
+    if (error instanceof NetworkError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        type: 'network_error',
+        retryable: error.isRetryable
+      });
+    }
+    
     console.error('Create patient error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
+    res.status(500).json({ 
+      error: 'Error del servidor',
+      type: 'server_error',
+      retryable: true 
+    });
   }
 });
 
@@ -776,22 +958,23 @@ app.put('/api/patients/:id', authenticateToken, async (req, res) => {
     const validatedAge = validators.validateAge(age, 'edad del paciente');
     const validatedCondition = validators.validateMedicalCondition(condition, 'condición médica');
 
-    // Verificar que no exista otro paciente con el mismo email (excluyendo el actual)
-    const existingPatient = await query(
+    // ✅ NUEVO: Verificación con reintentos
+    const existingPatient = await retryWithBackoff(() => query(
       'SELECT id FROM patients WHERE email = $1 AND instructor_id = $2 AND id != $3 AND is_active = TRUE', 
       [validatedEmail, req.user.id, patientId]
-    );
+    ));
     
     if (existingPatient.rows.length > 0) {
       throw new ValidationError('Ya tienes otro paciente registrado con este email', 'email', 'DUPLICATE_PATIENT_EMAIL');
     }
 
-    const result = await query(`
+    // ✅ NUEVO: Actualización con reintentos
+    const result = await retryWithBackoff(() => query(`
       UPDATE patients 
       SET name = $1, email = $2, age = $3, condition = $4, updated_at = CURRENT_TIMESTAMP 
       WHERE id = $5 AND instructor_id = $6
       RETURNING *
-    `, [validatedName, validatedEmail, validatedAge, validatedCondition, patientId, req.user.id]);
+    `, [validatedName, validatedEmail, validatedAge, validatedCondition, patientId, req.user.id]));
 
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Paciente no encontrado' });
@@ -821,8 +1004,20 @@ app.put('/api/patients/:id', authenticateToken, async (req, res) => {
       });
     }
     
+    if (error instanceof NetworkError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        type: 'network_error',
+        retryable: error.isRetryable
+      });
+    }
+    
     console.error('Update patient error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
+    res.status(500).json({ 
+      error: 'Error del servidor',
+      type: 'server_error',
+      retryable: true 
+    });
   }
 });
 
@@ -839,11 +1034,11 @@ app.delete('/api/patients/:id', authenticateToken, async (req, res) => {
       throw new ValidationError('ID de paciente inválido', 'id', 'INVALID_ID');
     }
 
-    // Soft delete
-    const result = await query(
+    // ✅ NUEVO: Soft delete con reintentos
+    const result = await retryWithBackoff(() => query(
       'UPDATE patients SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND instructor_id = $2 RETURNING *',
       [patientId, req.user.id]
-    );
+    ));
 
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Paciente no encontrado' });
@@ -864,8 +1059,20 @@ app.delete('/api/patients/:id', authenticateToken, async (req, res) => {
       });
     }
     
+    if (error instanceof NetworkError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        type: 'network_error',
+        retryable: error.isRetryable
+      });
+    }
+    
     console.error('Delete patient error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
+    res.status(500).json({ 
+      error: 'Error del servidor',
+      type: 'server_error',
+      retryable: true 
+    });
   }
 });
 
@@ -879,14 +1086,15 @@ app.get('/api/therapy-types', authenticateToken, cacheMiddleware(30 * 60 * 1000)
   res.json(types);
 });
 
-// Therapy series routes CON VALIDACIONES ROBUSTAS
+// Therapy series routes CON VALIDACIONES ROBUSTAS Y MANEJO DE RED
 app.get('/api/therapy-series', authenticateToken, cacheMiddleware(), async (req, res) => {
   try {
     if (req.user.role !== 'instructor') {
       return res.status(403).json({ error: 'Acceso denegado' });
     }
 
-    const seriesResult = await query(`
+    // ✅ NUEVO: Query con reintentos
+    const seriesResult = await retryWithBackoff(() => query(`
       SELECT ts.*, 
              COUNT(DISTINCT p.id) as assigned_patients_count,
              COUNT(DISTINCT s.id) as total_sessions_count
@@ -896,7 +1104,7 @@ app.get('/api/therapy-series', authenticateToken, cacheMiddleware(), async (req,
       WHERE ts.instructor_id = $1 AND ts.is_active = TRUE
       GROUP BY ts.id
       ORDER BY ts.created_at DESC
-    `, [req.user.id]);
+    `, [req.user.id]));
 
     const seriesWithPostures = seriesResult.rows.map(s => ({
       ...s,
@@ -905,8 +1113,20 @@ app.get('/api/therapy-series', authenticateToken, cacheMiddleware(), async (req,
 
     res.json(seriesWithPostures);
   } catch (error) {
+    if (error instanceof NetworkError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        type: 'network_error',
+        retryable: error.isRetryable
+      });
+    }
+    
     console.error('Get therapy series error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
+    res.status(500).json({ 
+      error: 'Error del servidor',
+      type: 'server_error',
+      retryable: true 
+    });
   }
 });
 
@@ -924,11 +1144,11 @@ app.post('/api/therapy-series', authenticateToken, async (req, res) => {
     const validatedPostures = validators.validatePostures(postures);
     const validatedTotalSessions = validators.validateTotalSessions(totalSessions);
 
-    // Verificar que no exista una serie con el mismo nombre para este instructor
-    const existingSeries = await query(
+    // ✅ NUEVO: Verificación con reintentos
+    const existingSeries = await retryWithBackoff(() => query(
       'SELECT id FROM therapy_series WHERE name = $1 AND instructor_id = $2 AND is_active = TRUE',
       [validatedName, req.user.id]
-    );
+    ));
 
     if (existingSeries.rows.length > 0) {
       throw new ValidationError('Ya tienes una serie con este nombre', 'name', 'DUPLICATE_SERIES_NAME');
@@ -951,10 +1171,11 @@ app.post('/api/therapy-series', authenticateToken, async (req, res) => {
       );
     }
 
-    const result = await query(
+    // ✅ NUEVO: Inserción con reintentos
+    const result = await retryWithBackoff(() => query(
       'INSERT INTO therapy_series (name, therapy_type, postures, total_sessions, instructor_id) VALUES ($1, $2, $3, $4, $5) RETURNING *',
       [validatedName, validatedTherapyType, JSON.stringify(validatedPostures), validatedTotalSessions, req.user.id]
-    );
+    ));
 
     const series = result.rows[0];
 
@@ -983,8 +1204,20 @@ app.post('/api/therapy-series', authenticateToken, async (req, res) => {
       });
     }
     
+    if (error instanceof NetworkError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        type: 'network_error',
+        retryable: error.isRetryable
+      });
+    }
+    
     console.error('Create therapy series error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
+    res.status(500).json({ 
+      error: 'Error del servidor',
+      type: 'server_error',
+      retryable: true 
+    });
   }
 });
 
@@ -1001,22 +1234,24 @@ app.delete('/api/therapy-series/:id', authenticateToken, async (req, res) => {
       throw new ValidationError('ID de serie inválido', 'id', 'INVALID_ID');
     }
 
-    const seriesResult = await query(
-      'SELECT * FROM therapy_series WHERE id = $1 AND instructor_id = $2',
-      [seriesId, req.user.id]
-    );
+    // ✅ NUEVO: Verificaciones con reintentos
+    const [seriesResult, assignedPatients] = await Promise.all([
+      retryWithBackoff(() => query(
+        'SELECT * FROM therapy_series WHERE id = $1 AND instructor_id = $2',
+        [seriesId, req.user.id]
+      )),
+      retryWithBackoff(() => query(`
+        SELECT id FROM patients 
+        WHERE instructor_id = $1 AND assigned_series IS NOT NULL 
+        AND (assigned_series::json->>'id')::int = $2
+      `, [req.user.id, seriesId]))
+    ]);
+
     const series = seriesResult.rows[0];
 
     if (!series) {
       return res.status(404).json({ error: 'Serie no encontrada' });
     }
-
-    // Verificar que no hay pacientes asignados a esta serie
-    const assignedPatients = await query(`
-      SELECT id FROM patients 
-      WHERE instructor_id = $1 AND assigned_series IS NOT NULL 
-      AND (assigned_series::json->>'id')::int = $2
-    `, [req.user.id, seriesId]);
 
     if (assignedPatients.rows.length > 0) {
       throw new ValidationError(
@@ -1026,11 +1261,11 @@ app.delete('/api/therapy-series/:id', authenticateToken, async (req, res) => {
       );
     }
 
-    // Soft delete
-    await query(
+    // ✅ NUEVO: Soft delete con reintentos
+    await retryWithBackoff(() => query(
       'UPDATE therapy_series SET is_active = FALSE WHERE id = $1 AND instructor_id = $2',
       [seriesId, req.user.id]
-    );
+    ));
 
     clearCache('therapy-series');
     await logAnalyticsEvent(req.user.id, 'series_deleted', { seriesId });
@@ -1047,21 +1282,33 @@ app.delete('/api/therapy-series/:id', authenticateToken, async (req, res) => {
       });
     }
     
+    if (error instanceof NetworkError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        type: 'network_error',
+        retryable: error.isRetryable
+      });
+    }
+    
     console.error('Delete therapy series error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
+    res.status(500).json({ 
+      error: 'Error del servidor',
+      type: 'server_error',
+      retryable: true 
+    });
   }
 });
 
-// Analytics y Dashboard endpoints
+// Analytics y Dashboard endpoints CON MANEJO DE RED
 app.get('/api/dashboard/analytics', authenticateToken, cacheMiddleware(2 * 60 * 1000), async (req, res) => {
   try {
     if (req.user.role !== 'instructor') {
       return res.status(403).json({ error: 'Acceso denegado' });
     }
 
+    // ✅ NUEVO: Queries paralelas con reintentos
     const [stats, recentActivity, painTrends, sessionStats] = await Promise.all([
-      // Estadísticas generales
-      query(`
+      retryWithBackoff(() => query(`
         SELECT 
             COUNT(DISTINCT p.id) as total_patients,
             COUNT(DISTINCT CASE WHEN p.assigned_series IS NOT NULL THEN p.id END) as active_patients,
@@ -1073,10 +1320,9 @@ app.get('/api/dashboard/analytics', authenticateToken, cacheMiddleware(2 * 60 * 
         LEFT JOIN therapy_series ts ON ts.instructor_id = $1
         LEFT JOIN sessions s ON s.patient_id = p.id
         WHERE p.instructor_id = $1 AND p.is_active = TRUE
-      `, [req.user.id]),
+      `, [req.user.id])),
 
-      // Actividad reciente
-      query(`
+      retryWithBackoff(() => query(`
         SELECT 'session' as type, p.name as patient_name, s.completed_at as date, 
                s.pain_before, s.pain_after, s.session_number
         FROM sessions s
@@ -1084,10 +1330,9 @@ app.get('/api/dashboard/analytics', authenticateToken, cacheMiddleware(2 * 60 * 
         WHERE p.instructor_id = $1
         ORDER BY s.completed_at DESC
         LIMIT 10
-      `, [req.user.id]),
+      `, [req.user.id])),
 
-      // Tendencias de dolor por mes (PostgreSQL usa to_char en lugar de strftime)
-      query(`
+      retryWithBackoff(() => query(`
         SELECT 
             to_char(s.completed_at, 'YYYY-MM') as month,
             AVG(s.pain_before) as avg_pain_before,
@@ -1098,10 +1343,9 @@ app.get('/api/dashboard/analytics', authenticateToken, cacheMiddleware(2 * 60 * 
         WHERE p.instructor_id = $1 AND s.completed_at >= (CURRENT_DATE - INTERVAL '6 months')
         GROUP BY to_char(s.completed_at, 'YYYY-MM')
         ORDER BY month
-      `, [req.user.id]),
+      `, [req.user.id])),
 
-      // Estadísticas de sesiones por tipo de terapia
-      query(`
+      retryWithBackoff(() => query(`
         SELECT 
             ts.therapy_type,
             COUNT(s.id) as session_count,
@@ -1112,7 +1356,7 @@ app.get('/api/dashboard/analytics', authenticateToken, cacheMiddleware(2 * 60 * 
         JOIN patients p ON s.patient_id = p.id
         WHERE p.instructor_id = $1
         GROUP BY ts.therapy_type
-      `, [req.user.id])
+      `, [req.user.id]))
     ]);
 
     res.json({
@@ -1127,25 +1371,50 @@ app.get('/api/dashboard/analytics', authenticateToken, cacheMiddleware(2 * 60 * 
       generated_at: new Date().toISOString()
     });
   } catch (error) {
+    if (error instanceof NetworkError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        type: 'network_error',
+        retryable: error.isRetryable
+      });
+    }
+    
     console.error('Analytics error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
+    res.status(500).json({ 
+      error: 'Error del servidor',
+      type: 'server_error',
+      retryable: true 
+    });
   }
 });
 
-// Notifications system
+// Notifications system CON MANEJO DE RED
 app.get('/api/notifications', authenticateToken, async (req, res) => {
   try {
-    const notifications = await query(`
+    // ✅ NUEVO: Query con reintentos
+    const notifications = await retryWithBackoff(() => query(`
       SELECT * FROM notifications 
       WHERE user_id = $1 
       ORDER BY created_at DESC 
       LIMIT 20
-    `, [req.user.id]);
+    `, [req.user.id]));
 
     res.json(notifications.rows);
   } catch (error) {
+    if (error instanceof NetworkError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        type: 'network_error',
+        retryable: error.isRetryable
+      });
+    }
+    
     console.error('Get notifications error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
+    res.status(500).json({ 
+      error: 'Error del servidor',
+      type: 'server_error',
+      retryable: true 
+    });
   }
 });
 
@@ -1158,10 +1427,12 @@ app.put('/api/notifications/:id/read', authenticateToken, async (req, res) => {
       throw new ValidationError('ID de notificación inválido', 'id', 'INVALID_ID');
     }
 
-    await query(
+    // ✅ NUEVO: Update con reintentos
+    await retryWithBackoff(() => query(
       'UPDATE notifications SET is_read = TRUE WHERE id = $1 AND user_id = $2',
       [notificationId, req.user.id]
-    );
+    ));
+    
     res.json({ message: 'Notificación marcada como leída' });
 
   } catch (error) {
@@ -1174,12 +1445,24 @@ app.put('/api/notifications/:id/read', authenticateToken, async (req, res) => {
       });
     }
     
+    if (error instanceof NetworkError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        type: 'network_error',
+        retryable: error.isRetryable
+      });
+    }
+    
     console.error('Mark notification read error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
+    res.status(500).json({ 
+      error: 'Error del servidor',
+      type: 'server_error',
+      retryable: true 
+    });
   }
 });
 
-// Export reports endpoint CON VALIDACIONES
+// Export reports endpoint CON VALIDACIONES Y MANEJO DE RED
 app.get('/api/reports/export', authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'instructor') {
@@ -1223,7 +1506,8 @@ app.get('/api/reports/export', authenticateToken, async (req, res) => {
       params.push(validatedDateFrom.toISOString(), validatedDateTo.toISOString());
     }
 
-    const reportResult = await query(`
+    // ✅ NUEVO: Query de reporte con reintentos
+    const reportResult = await retryWithBackoff(() => query(`
       SELECT 
           p.name as patient_name,
           p.email as patient_email,
@@ -1243,7 +1527,7 @@ app.get('/api/reports/export', authenticateToken, async (req, res) => {
       JOIN therapy_series ts ON s.series_id = ts.id
       WHERE p.instructor_id = $1 ${dateFilter}
       ORDER BY s.completed_at DESC
-    `, params);
+    `, params));
 
     const reportData = reportResult.rows;
 
@@ -1299,12 +1583,24 @@ app.get('/api/reports/export', authenticateToken, async (req, res) => {
       });
     }
     
+    if (error instanceof NetworkError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        type: 'network_error',
+        retryable: error.isRetryable
+      });
+    }
+    
     console.error('Export reports error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
+    res.status(500).json({ 
+      error: 'Error del servidor',
+      type: 'server_error',
+      retryable: true 
+    });
   }
 });
 
-// Assign series CON VALIDACIONES ROBUSTAS
+// Assign series CON VALIDACIONES ROBUSTAS Y MANEJO DE RED
 app.post('/api/patients/:id/assign-series', authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'instructor') {
@@ -1325,9 +1621,10 @@ app.post('/api/patients/:id/assign-series', authenticateToken, async (req, res) 
 
     const validatedSeriesId = parseInt(seriesId);
 
+    // ✅ NUEVO: Verificaciones paralelas con reintentos
     const [patientResult, seriesResult] = await Promise.all([
-      query('SELECT * FROM patients WHERE id = $1 AND instructor_id = $2 AND is_active = TRUE', [patientId, req.user.id]),
-      query('SELECT * FROM therapy_series WHERE id = $1 AND instructor_id = $2 AND is_active = TRUE', [validatedSeriesId, req.user.id])
+      retryWithBackoff(() => query('SELECT * FROM patients WHERE id = $1 AND instructor_id = $2 AND is_active = TRUE', [patientId, req.user.id])),
+      retryWithBackoff(() => query('SELECT * FROM therapy_series WHERE id = $1 AND instructor_id = $2 AND is_active = TRUE', [validatedSeriesId, req.user.id]))
     ]);
 
     const patient = patientResult.rows[0];
@@ -1346,23 +1643,29 @@ app.post('/api/patients/:id/assign-series', authenticateToken, async (req, res) 
       postures: JSON.parse(series.postures)
     };
 
-    await query(
+    // ✅ NUEVO: Updates con reintentos
+    await retryWithBackoff(() => query(
       'UPDATE patients SET assigned_series = $1, current_session = 0, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
       [JSON.stringify(seriesData), patientId]
-    );
+    ));
 
-    // Crear notificación para el paciente si está registrado
-    const patientUserResult = await query('SELECT id FROM users WHERE email = $1', [patient.email]);
-    const patientUser = patientUserResult.rows[0];
+    // ✅ NUEVO: Notificación con manejo de errores
+    try {
+      const patientUserResult = await retryWithBackoff(() => query('SELECT id FROM users WHERE email = $1', [patient.email]));
+      const patientUser = patientUserResult.rows[0];
 
-    if (patientUser) {
-      await query(`
-        INSERT INTO notifications (user_id, type, title, message) 
-        VALUES ($1, 'series_assigned', 'Nueva Serie Asignada', $2)
-      `, [patientUser.id, `Tu instructor te ha asignado la serie "${series.name}". ¡Puedes comenzar cuando estés listo!`]);
+      if (patientUser) {
+        await retryWithBackoff(() => query(`
+          INSERT INTO notifications (user_id, type, title, message) 
+          VALUES ($1, 'series_assigned', 'Nueva Serie Asignada', $2)
+        `, [patientUser.id, `Tu instructor te ha asignado la serie "${series.name}". ¡Puedes comenzar cuando estés listo!`]));
+      }
+    } catch (notificationError) {
+      console.warn('Notification creation failed:', notificationError.message);
+      // Continuar sin bloquear el flujo principal
     }
 
-    const updatedPatientResult = await query('SELECT * FROM patients WHERE id = $1', [patientId]);
+    const updatedPatientResult = await retryWithBackoff(() => query('SELECT * FROM patients WHERE id = $1', [patientId]));
     const updatedPatient = updatedPatientResult.rows[0];
 
     clearCache('patients');
@@ -1389,19 +1692,32 @@ app.post('/api/patients/:id/assign-series', authenticateToken, async (req, res) 
       });
     }
     
+    if (error instanceof NetworkError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        type: 'network_error',
+        retryable: error.isRetryable
+      });
+    }
+    
     console.error('Assign series error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
+    res.status(500).json({ 
+      error: 'Error del servidor',
+      type: 'server_error',
+      retryable: true 
+    });
   }
 });
 
-// Patient session routes CON VALIDACIONES ROBUSTAS
+// Patient session routes CON VALIDACIONES ROBUSTAS Y MANEJO DE RED
 app.get('/api/my-series', authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'patient') {
       return res.status(403).json({ error: 'Acceso denegado' });
     }
 
-    const patientResult = await query('SELECT * FROM patients WHERE email = $1 AND is_active = TRUE', [req.user.email]);
+    // ✅ NUEVO: Query con reintentos
+    const patientResult = await retryWithBackoff(() => query('SELECT * FROM patients WHERE email = $1 AND is_active = TRUE', [req.user.email]));
     const patient = patientResult.rows[0];
 
     if (!patient || !patient.assigned_series) {
@@ -1417,8 +1733,20 @@ app.get('/api/my-series', authenticateToken, async (req, res) => {
       }
     });
   } catch (error) {
+    if (error instanceof NetworkError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        type: 'network_error',
+        retryable: error.isRetryable
+      });
+    }
+    
     console.error('Get my series error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
+    res.status(500).json({ 
+      error: 'Error del servidor',
+      type: 'server_error',
+      retryable: true 
+    });
   }
 });
 
@@ -1441,7 +1769,8 @@ app.post('/api/sessions', authenticateToken, async (req, res) => {
       console.warn(`Pain increased significantly for user ${req.user.id}: ${validatedPainBefore} -> ${validatedPainAfter}`);
     }
 
-    const patientResult = await query('SELECT * FROM patients WHERE email = $1 AND is_active = TRUE', [req.user.email]);
+    // ✅ NUEVO: Query de paciente con reintentos
+    const patientResult = await retryWithBackoff(() => query('SELECT * FROM patients WHERE email = $1 AND is_active = TRUE', [req.user.email]));
     const patient = patientResult.rows[0];
 
     if (!patient) {
@@ -1464,36 +1793,57 @@ app.post('/api/sessions', authenticateToken, async (req, res) => {
       );
     }
 
-    // Insertar sesión
-    const result = await query(`
-      INSERT INTO sessions (patient_id, series_id, session_number, pain_before, pain_after, comments, duration_minutes) 
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
-      RETURNING *
-    `, [patient.id, assignedSeries.id, sessionNumber, validatedPainBefore, validatedPainAfter, validatedComments, validatedDuration]);
+    // ✅ NUEVO: Transacción con reintentos para insertar sesión y actualizar paciente
+    const result = await retryWithBackoff(async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        
+        // Insertar sesión
+        const sessionResult = await client.query(`
+          INSERT INTO sessions (patient_id, series_id, session_number, pain_before, pain_after, comments, duration_minutes) 
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          RETURNING *
+        `, [patient.id, assignedSeries.id, sessionNumber, validatedPainBefore, validatedPainAfter, validatedComments, validatedDuration]);
 
-    // Actualizar sesión actual del paciente
-    await query(
-      'UPDATE patients SET current_session = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      [sessionNumber, patient.id]
-    );
+        // Actualizar sesión actual del paciente
+        await client.query(
+          'UPDATE patients SET current_session = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          [sessionNumber, patient.id]
+        );
 
-    // Crear notificación para el instructor
-    const painImprovement = validatedPainBefore - validatedPainAfter;
-    const improvementText = painImprovement > 0 ? `una mejora de ${painImprovement} puntos` : 
-                           painImprovement < 0 ? `un aumento de ${Math.abs(painImprovement)} puntos` : 
-                           'sin cambios en el dolor';
+        await client.query('COMMIT');
+        return sessionResult;
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    });
 
-    await query(`
-      INSERT INTO notifications (user_id, type, title, message) 
-      VALUES ($1, 'session_completed', 'Sesión Completada', $2)
-    `, [patient.instructor_id, `${patient.name} completó la sesión ${sessionNumber} con ${improvementText}.`]);
+    // ✅ NUEVO: Notificación con manejo de errores
+    try {
+      const painImprovement = validatedPainBefore - validatedPainAfter;
+      const improvementText = painImprovement > 0 ? `una mejora de ${painImprovement} puntos` : 
+                             painImprovement < 0 ? `un aumento de ${Math.abs(painImprovement)} puntos` : 
+                             'sin cambios en el dolor';
+
+      await retryWithBackoff(() => query(`
+        INSERT INTO notifications (user_id, type, title, message) 
+        VALUES ($1, 'session_completed', 'Sesión Completada', $2)
+      `, [patient.instructor_id, `${patient.name} completó la sesión ${sessionNumber} con ${improvementText}.`]));
+    } catch (notificationError) {
+      console.warn('Notification creation failed:', notificationError.message);
+      // Continuar sin bloquear el flujo principal
+    }
 
     const session = result.rows[0];
 
     clearCache('patients');
     await logAnalyticsEvent(req.user.id, 'session_completed', {
       sessionId: session.id,
-      painImprovement,
+      painImprovement: validatedPainBefore - validatedPainAfter,
       sessionNumber,
       duration: validatedDuration
     });
@@ -1514,12 +1864,24 @@ app.post('/api/sessions', authenticateToken, async (req, res) => {
       });
     }
     
+    if (error instanceof NetworkError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        type: 'network_error',
+        retryable: error.isRetryable
+      });
+    }
+    
     console.error('Create session error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
+    res.status(500).json({ 
+      error: 'Error del servidor',
+      type: 'server_error',
+      retryable: true 
+    });
   }
 });
 
-// Get patient sessions CON VALIDACIONES
+// Get patient sessions CON VALIDACIONES Y MANEJO DE RED
 app.get('/api/patients/:id/sessions', authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'instructor') {
@@ -1533,23 +1895,26 @@ app.get('/api/patients/:id/sessions', authenticateToken, async (req, res) => {
       throw new ValidationError('ID de paciente inválido', 'id', 'INVALID_ID');
     }
 
-    const patientResult = await query(
-      'SELECT * FROM patients WHERE id = $1 AND instructor_id = $2',
-      [patientId, req.user.id]
-    );
+    // ✅ NUEVO: Verificaciones con reintentos
+    const [patientResult, sessionsResult] = await Promise.all([
+      retryWithBackoff(() => query(
+        'SELECT * FROM patients WHERE id = $1 AND instructor_id = $2',
+        [patientId, req.user.id]
+      )),
+      retryWithBackoff(() => query(`
+        SELECT s.*, ts.name as series_name, ts.therapy_type
+        FROM sessions s
+        LEFT JOIN therapy_series ts ON s.series_id = ts.id
+        WHERE s.patient_id = $1 
+        ORDER BY s.completed_at DESC
+      `, [patientId]))
+    ]);
+
     const patient = patientResult.rows[0];
 
     if (!patient) {
       return res.status(404).json({ error: 'Paciente no encontrado' });
     }
-
-    const sessionsResult = await query(`
-      SELECT s.*, ts.name as series_name, ts.therapy_type
-      FROM sessions s
-      LEFT JOIN therapy_series ts ON s.series_id = ts.id
-      WHERE s.patient_id = $1 
-      ORDER BY s.completed_at DESC
-    `, [patientId]);
 
     res.json(sessionsResult.rows);
 
@@ -1563,29 +1928,52 @@ app.get('/api/patients/:id/sessions', authenticateToken, async (req, res) => {
       });
     }
     
+    if (error instanceof NetworkError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        type: 'network_error',
+        retryable: error.isRetryable
+      });
+    }
+    
     console.error('Get patient sessions error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
+    res.status(500).json({ 
+      error: 'Error del servidor',
+      type: 'server_error',
+      retryable: true 
+    });
   }
 });
 
-// Health check endpoint
+// ✅ NUEVO: Health check endpoint mejorado con verificación de red
 app.get('/api/health', async (req, res) => {
   try {
-    // Verificar conexión a la base de datos
-    await query('SELECT 1');
+    // ✅ NUEVO: Verificar conexión a la base de datos con timeout
+    const dbCheck = await retryWithBackoff(
+      () => query('SELECT 1'),
+      1 // Solo 1 reintento para health check
+    );
+    
     res.json({
       status: 'healthy',
       timestamp: new Date().toISOString(),
       cache_size: cache.size,
       uptime: process.uptime(),
       database: 'connected',
-      validation_system: 'active'
+      validation_system: 'active',
+      retry_system: 'active',
+      pool_status: {
+        total: pool.totalCount,
+        idle: pool.idleCount,
+        waiting: pool.waitingCount
+      }
     });
   } catch (error) {
     res.status(500).json({
       status: 'unhealthy',
       error: 'Database connection failed',
-      details: error.message
+      details: error.message,
+      retryable: error instanceof NetworkError ? error.isRetryable : true
     });
   }
 });
@@ -1681,7 +2069,39 @@ app.post('/api/validate', authenticateToken, async (req, res) => {
     }
     
     console.error('Validation error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
+    res.status(500).json({ 
+      error: 'Error del servidor',
+      type: 'server_error',
+      retryable: true 
+    });
+  }
+});
+
+// ✅ NUEVO: Endpoint para verificar conectividad
+app.get('/api/connectivity', authenticateToken, async (req, res) => {
+  try {
+    const startTime = Date.now();
+    
+    // Test de conectividad básico
+    await retryWithBackoff(() => query('SELECT CURRENT_TIMESTAMP'), 0); // Sin reintentos para test rápido
+    
+    const responseTime = Date.now() - startTime;
+    
+    res.json({
+      status: 'connected',
+      response_time_ms: responseTime,
+      timestamp: new Date().toISOString(),
+      network_quality: responseTime < 1000 ? 'good' : responseTime < 3000 ? 'fair' : 'poor'
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      status: 'disconnected',
+      error: error.message,
+      type: 'connectivity_error',
+      retryable: true,
+      timestamp: new Date().toISOString()
+    });
   }
 });
 
@@ -1690,30 +2110,44 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Error handling middleware MEJORADO
+// ✅ NUEVO: Error handling middleware MEJORADO con manejo de red
+app.use(handleNetworkError);
 app.use(handleValidationError);
 
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   
+  // ✅ NUEVO: Determinar si el error es reintentable
+  const isNetworkRelated = 
+    err.code === 'ECONNRESET' ||
+    err.code === 'ENOTFOUND' ||
+    err.code === 'ECONNREFUSED' ||
+    err.code === 'ETIMEDOUT' ||
+    err.message?.includes('timeout') ||
+    err.message?.includes('connection');
+
   // Log del error para debugging
   const errorDetails = {
     message: err.message,
+    code: err.code,
     stack: err.stack,
     url: req.originalUrl,
     method: req.method,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    isNetworkRelated
   };
   
   console.error('Error details:', errorDetails);
   
   res.status(500).json({ 
     error: 'Error interno del servidor',
+    type: isNetworkRelated ? 'network_error' : 'server_error',
+    retryable: isNetworkRelated || err.statusCode >= 500,
     timestamp: errorDetails.timestamp
   });
 });
 
-// Limpiar cache periódicamente
+// ✅ NUEVO: Limpiar cache periódicamente y monitorear pool de conexiones
 setInterval(() => {
   const now = Date.now();
   for (const [key, value] of cache.entries()) {
@@ -1721,7 +2155,23 @@ setInterval(() => {
       cache.delete(key);
     }
   }
+  
+  // Log de estado del pool para debugging
+  console.log(`Pool status - Total: ${pool.totalCount}, Idle: ${pool.idleCount}, Waiting: ${pool.waitingCount}`);
 }, 5 * 60 * 1000); // Cada 5 minutos
+
+// ✅ NUEVO: Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received, shutting down gracefully...');
+  await pool.end();
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('SIGINT received, shutting down gracefully...');
+  await pool.end();
+  process.exit(0);
+});
 
 // Initialize database and start server
 initDatabase().then(() => {
@@ -1732,6 +2182,9 @@ initDatabase().then(() => {
     console.log(`📈 Analytics tracking enabled`);
     console.log(`✅ Robust validation system activated`);
     console.log(`🛡️  Security validations implemented`);
+    console.log(`🔄 Network error recovery system enabled`);
+    console.log(`⚡ Request timeout protection active`);
+    console.log(`🔗 Connection pool monitoring active`);
   });
 }).catch(error => {
   console.error('Failed to initialize database:', error);
