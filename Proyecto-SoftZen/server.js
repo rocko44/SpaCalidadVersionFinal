@@ -2105,9 +2105,19 @@ app.get('/api/connectivity', authenticateToken, async (req, res) => {
   }
 });
 
-// Serve frontend
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+
+// Middleware para rutas no encontradas (404)
+app.use((req, res, next) => {
+  // Si la petición es para un archivo estático que no existe, Express ya devuelve 404
+  // Si es una ruta de frontend, devolver index.html solo para rutas válidas
+  if (req.method === 'GET' && req.accepts('html')) {
+    // Aquí podrías tener una lista blanca de rutas válidas si lo deseas
+    // Por ahora, solo devolver index.html para rutas que no sean API ni archivos
+    if (!req.path.startsWith('/api') && !req.path.includes('.')) {
+      return res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    }
+  }
+  res.status(404).send('404 Not Found');
 });
 
 // ✅ NUEVO: Error handling middleware MEJORADO con manejo de red

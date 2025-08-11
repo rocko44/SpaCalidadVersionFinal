@@ -364,15 +364,80 @@ class TherapeuticYogaApp {
         }
     }
 
-    async fetchWithAuth(url, options = {}) {
-        return fetch(url, {
+    /**
+     * Realiza una petición fetch con autenticación, reintentos y timeout.
+     * Guarda automáticamente los datos enviados en caso de error de red.
+     * @param {string} url
+     * @param {object} options
+     * @param {number} retries
+     * @param {number} timeoutMs
+     */
+    async fetchWithAuth(url, options = {}, retries = 2, timeoutMs = 8000) {
+        const finalOptions = {
             ...options,
             headers: {
                 ...options.headers,
                 'Authorization': `Bearer ${this.token}`,
                 'Content-Type': 'application/json'
             }
-        });
+        };
+        let lastError;
+        for (let attempt = 0; attempt <= retries; attempt++) {
+            try {
+                const controller = new AbortController();
+                const id = setTimeout(() => controller.abort(), timeoutMs);
+                const response = await fetch(url, {
+                    ...finalOptions,
+                    signal: controller.signal
+                });
+                clearTimeout(id);
+                if (!response.ok && response.status >= 500 && attempt < retries) {
+                    // Reintentar en errores de servidor
+                    await this.wait(600 * (attempt + 1));
+                    continue;
+                }
+                return response;
+            } catch (error) {
+                lastError = error;
+                if (error.name === 'AbortError') {
+                    if (attempt < retries) {
+                        await this.wait(600 * (attempt + 1));
+                        continue;
+                    }
+                }
+                // Guardado automático de datos enviados si es POST/PUT/PATCH
+                if (finalOptions.method && ['POST','PUT','PATCH'].includes(finalOptions.method.toUpperCase()) && finalOptions.body) {
+                    try {
+                        localStorage.setItem('autoSave_' + url, finalOptions.body);
+                    } catch (e) {}
+                }
+                if (attempt < retries) {
+                    await this.wait(600 * (attempt + 1));
+                    continue;
+                }
+            }
+        }
+        SweetAlerts.error('Error de red', 'No se pudo conectar con el servidor. Intenta nuevamente.');
+        throw lastError;
+    }
+
+    // Espera utilitaria para reintentos
+    wait(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    // Recupera datos guardados automáticamente para una URL
+    getAutoSavedData(url) {
+        try {
+            return localStorage.getItem('autoSave_' + url);
+        } catch (e) { return null; }
+    }
+
+    // Limpia datos guardados automáticamente para una URL
+    clearAutoSavedData(url) {
+        try {
+            localStorage.removeItem('autoSave_' + url);
+        } catch (e) {}
     }
 
     showView(view) {
@@ -1238,7 +1303,14 @@ class TherapeuticYogaApp {
             const videoId = this.extractYouTubeVideoId(posture.videoUrl);
             if (videoId) {
                 videoFrame.src = `https://www.youtube.com/embed/${videoId}`;
+                videoFrame.style.display = '';
+            } else {
+                videoFrame.src = '';
+                videoFrame.style.display = 'none';
             }
+        } else {
+            videoFrame.src = '';
+            videoFrame.style.display = 'none';
         }
 
         document.getElementById('posture-detail-modal').classList.remove('hidden');
@@ -1494,7 +1566,14 @@ class TherapeuticYogaApp {
             const videoId = this.extractYouTubeVideoId(posture.videoUrl);
             if (videoId) {
                 videoFrame.src = `https://www.youtube.com/embed/${videoId}?autoplay=0&rel=0`;
+                videoFrame.style.display = '';
+            } else {
+                videoFrame.src = '';
+                videoFrame.style.display = 'none';
             }
+        } else {
+            videoFrame.src = '';
+            videoFrame.style.display = 'none';
         }
 
         const pauseBtn = document.getElementById('pause-timer-btn');

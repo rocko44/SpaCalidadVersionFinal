@@ -184,6 +184,8 @@ body {
     border-radius: 16px;
     box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
     overflow: hidden;
+    background: rgba(255,255,255,0.85);
+    -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
 }
 
@@ -248,20 +250,21 @@ body {
 .form-group textarea {
     width: 100%;
     padding: 0.875rem;
-    border: 2px solid #e9ecef;
+    border: 2px solid #888;
     border-radius: 10px;
     font-size: 1rem;
     transition: all 0.3s ease;
-    background: #fafbfc;
+    background: #fff;
+    color: #222;
 }
 
 .form-group input:focus,
 .form-group select:focus,
 .form-group textarea:focus {
     outline: none;
-    border-color: #667eea;
-    background: white;
-    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+    border-color: #4b3c8a;
+    background: #fff;
+    box-shadow: 0 0 0 3px rgba(75, 60, 138, 0.12);
 }
 
 .form-group textarea {
@@ -295,24 +298,24 @@ body {
 }
 
 .btn-primary {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-    box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+    background: linear-gradient(135deg, #4b3c8a 0%, #764ba2 100%);
+    color: #fff;
+    box-shadow: 0 4px 15px rgba(75, 60, 138, 0.3);
 }
 
 .btn-primary:hover {
     transform: translateY(-2px);
-    box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+    box-shadow: 0 8px 25px rgba(75, 60, 138, 0.4);
 }
 
 .btn-secondary {
-    background: #6c757d;
-    color: white;
-    box-shadow: 0 4px 15px rgba(108, 117, 125, 0.2);
+    background: #444;
+    color: #fff;
+    box-shadow: 0 4px 15px rgba(44, 44, 44, 0.2);
 }
 
 .btn-secondary:hover {
-    background: #5a6268;
+    background: #222;
     transform: translateY(-1px);
 }
 
@@ -335,6 +338,8 @@ body {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    background: rgba(255,255,255,0.85);
+    -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
     border-bottom: 1px solid rgba(102, 126, 234, 0.1);
 }
@@ -1100,6 +1105,8 @@ body {
     justify-content: center;
     align-items: center;
     z-index: 1000;
+    background: rgba(0,0,0,0.6);
+    -webkit-backdrop-filter: blur(4px);
     backdrop-filter: blur(4px);
 }
 

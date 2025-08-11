@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Yoga Terapéutico Online</title>
+    <meta name="description" content="Plataforma de yoga terapéutico online para mejorar tu bienestar físico y mental. Accede a sesiones, series y posturas guiadas por profesionales. Ideal para ansiedad, dolor de espalda, artritis y más.">
     
     <!-- Sweet Alert 2 CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/sweetalert2/11.7.32/sweetalert2.all.min.js"></script>
@@ -38,7 +39,7 @@
                     </div>
                     <div class="form-group">
                         <label for="login-password">Contraseña</label>
-                        <input type="password" id="login-password" required>
+                        <input type="password" id="login-password" required autocomplete="current-password">
                     </div>
                     <button type="submit" class="btn-primary">Iniciar Sesión</button>
                 </form>
@@ -54,11 +55,12 @@
                     </div>
                     <div class="form-group">
                         <label for="register-password">Contraseña</label>
-                        <input type="password" id="register-password" required>
+                        <input type="password" id="register-password" required autocomplete="new-password">
                     </div>
                     <div class="form-group">
                         <label for="register-role">Rol</label>
                         <select id="register-role" required>
+                            <option value="">Selecciona un rol</option>
                             <option value="instructor">Instructor</option>
                             <option value="patient">Paciente</option>
                         </select>
@@ -234,15 +236,11 @@
                         <div id="posture-display" class="session-stage hidden">
                             <div class="posture-content">
                                 <div class="video-container">
-                                    <iframe id="posture-video" 
-                                            width="100%" 
-                                            height="315" 
-                                            src="" 
-                                            title="Video tutorial de yoga"
-                                            frameborder="0" 
-                                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
-                                            allowfullscreen>
-                                    </iframe>
+                    <iframe id="posture-video"
+                        height="315"
+                        title="Video tutorial de yoga"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                        allowfullscreen style="width:100%; border:none;"></iframe>
                                 </div>
                                 
                                 <div class="posture-info-panel">
@@ -423,15 +421,11 @@
                 <div class="modal-body">
                     <div class="posture-detail-content">
                         <div class="video-container">
-                            <iframe id="modal-posture-video" 
-                                    width="100%" 
-                                    height="315" 
-                                    src="" 
-                                    title="Video tutorial de yoga"
-                                    frameborder="0" 
-                                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
-                                    allowfullscreen>
-                            </iframe>
+                <iframe id="modal-posture-video"
+                    height="315"
+                    title="Video tutorial de yoga"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    allowfullscreen style="width:100%; border:none;"></iframe>
                         </div>
                         <div class="posture-info-detailed">
                             <p id="modal-posture-sanskrit" class="sanskrit"></p>
