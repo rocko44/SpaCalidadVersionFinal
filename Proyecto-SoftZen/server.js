@@ -5,7 +5,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
-import { Pool } from 'pg'; // Cambiamos sqlite3 por pg
+import { Pool } from 'pg';
 import { therapyTypes } from './predefinedTherapy.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -26,6 +26,361 @@ const pool = new Pool({
 // Cache en memoria para optimización
 const cache = new Map();
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutos
+
+// =============================================
+// SISTEMA DE VALIDACIONES ROBUSTO
+// =============================================
+
+class ValidationError extends Error {
+  constructor(message, field = null, code = null) {
+    super(message);
+    this.name = 'ValidationError';
+    this.field = field;
+    this.code = code;
+    this.statusCode = 400;
+  }
+}
+
+// Expresiones regulares para validaciones
+const REGEX_PATTERNS = {
+  email: /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/,
+  name: /^[a-zA-ZáéíóúÁÉÍÓÚñÑ\s]{2,50}$/,
+  alphanumeric: /^[a-zA-Z0-9\sáéíóúÁÉÍÓÚñÑ.,;:()\-]{2,200}$/,
+  seriesName: /^[a-zA-Z0-9\sáéíóúÁÉÍÓÚñÑ.,;:()\-]{3,100}$/,
+  password: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>])[A-Za-z\d!@#$%^&*(),.?":{}|<>]{8,}$/,
+  phoneNumber: /^[\+]?[1-9][\d]{0,15}$/,
+  postalCode: /^[0-9]{5}(-[0-9]{4})?$/
+};
+
+// Lista de condiciones médicas válidas
+const VALID_MEDICAL_CONDITIONS = [
+  'artritis', 'artrosis', 'fibromialgia', 'dolor_cronico', 'lesion_deportiva',
+  'hernia_discal', 'escoliosis', 'contractura_muscular', 'tendinitis', 'bursitis',
+  'sindrome_tunel_carpiano', 'cervicalgia', 'lumbalgia', 'ciatalgia', 'esguince',
+  'fractura_recuperacion', 'postoperatorio', 'ansiedad', 'estres', 'depresion',
+  'insomnio', 'hipertension', 'diabetes', 'obesidad', 'embarazo', 'menopausia',
+  'sindrome_fatiga_cronica', 'multiple_esclerosis', 'parkinson', 'otro'
+];
+
+// Tipos de terapia válidos
+const VALID_THERAPY_TYPES = Object.keys(therapyTypes);
+
+// Validadores específicos
+const validators = {
+  // Validación de email
+  validateEmail(email, fieldName = 'email') {
+    if (!email || typeof email !== 'string') {
+      throw new ValidationError(`${fieldName} es obligatorio`, fieldName, 'REQUIRED');
+    }
+    
+    const cleanEmail = email.trim().toLowerCase();
+    
+    if (cleanEmail.length < 5 || cleanEmail.length > 254) {
+      throw new ValidationError(`${fieldName} debe tener entre 5 y 254 caracteres`, fieldName, 'LENGTH');
+    }
+    
+    if (!REGEX_PATTERNS.email.test(cleanEmail)) {
+      throw new ValidationError(`${fieldName} debe tener un formato válido (ejemplo: usuario@dominio.com)`, fieldName, 'FORMAT');
+    }
+    
+    // Verificar dominios comunes pero con errores tipográficos
+    const suspiciousDomains = ['gmial.com', 'yahooo.com', 'hotmial.com', 'outlok.com'];
+    const domain = cleanEmail.split('@')[1];
+    if (suspiciousDomains.includes(domain)) {
+      throw new ValidationError(`Revisa la ortografía del dominio de email: ${domain}`, fieldName, 'SUSPICIOUS_DOMAIN');
+    }
+    
+    return cleanEmail;
+  },
+
+  // Validación de nombres
+  validateName(name, fieldName = 'nombre') {
+    if (!name || typeof name !== 'string') {
+      throw new ValidationError(`${fieldName} es obligatorio`, fieldName, 'REQUIRED');
+    }
+    
+    const cleanName = name.trim();
+    
+    if (cleanName.length < 2 || cleanName.length > 50) {
+      throw new ValidationError(`${fieldName} debe tener entre 2 y 50 caracteres`, fieldName, 'LENGTH');
+    }
+    
+    if (!REGEX_PATTERNS.name.test(cleanName)) {
+      throw new ValidationError(`${fieldName} solo puede contener letras y espacios`, fieldName, 'FORMAT');
+    }
+    
+    // Verificar que no sea solo espacios
+    if (cleanName.replace(/\s/g, '').length === 0) {
+      throw new ValidationError(`${fieldName} no puede estar vacío`, fieldName, 'EMPTY');
+    }
+    
+    // Verificar que no tenga espacios múltiples consecutivos
+    if (/\s{2,}/.test(cleanName)) {
+      throw new ValidationError(`${fieldName} no puede tener espacios múltiples consecutivos`, fieldName, 'MULTIPLE_SPACES');
+    }
+    
+    return cleanName;
+  },
+
+  // Validación de edad
+  validateAge(age, fieldName = 'edad') {
+    if (age === null || age === undefined || age === '') {
+      throw new ValidationError(`${fieldName} es obligatoria`, fieldName, 'REQUIRED');
+    }
+    
+    const numAge = parseInt(age, 10);
+    
+    if (isNaN(numAge)) {
+      throw new ValidationError(`${fieldName} debe ser un número válido`, fieldName, 'NOT_A_NUMBER');
+    }
+    
+    if (numAge < 1 || numAge > 120) {
+      throw new ValidationError(`${fieldName} debe estar entre 1 y 120 años`, fieldName, 'OUT_OF_RANGE');
+    }
+    
+    return numAge;
+  },
+
+  // Validación de condición médica
+  validateMedicalCondition(condition, fieldName = 'condición médica') {
+    if (!condition || typeof condition !== 'string') {
+      throw new ValidationError(`${fieldName} es obligatoria`, fieldName, 'REQUIRED');
+    }
+    
+    const cleanCondition = condition.trim().toLowerCase().replace(/\s+/g, '_');
+    
+    if (cleanCondition.length < 3 || cleanCondition.length > 200) {
+      throw new ValidationError(`${fieldName} debe tener entre 3 y 200 caracteres`, fieldName, 'LENGTH');
+    }
+    
+    // Si no está en la lista de condiciones válidas, permitir "otro" pero validar formato
+    if (!VALID_MEDICAL_CONDITIONS.includes(cleanCondition)) {
+      if (!REGEX_PATTERNS.alphanumeric.test(condition.trim())) {
+        throw new ValidationError(`${fieldName} contiene caracteres no válidos`, fieldName, 'INVALID_CHARACTERS');
+      }
+    }
+    
+    return condition.trim();
+  },
+
+  // Validación de contraseña
+  validatePassword(password, fieldName = 'contraseña') {
+    if (!password || typeof password !== 'string') {
+      throw new ValidationError(`${fieldName} es obligatoria`, fieldName, 'REQUIRED');
+    }
+    
+    if (password.length < 8 || password.length > 128) {
+      throw new ValidationError(`${fieldName} debe tener entre 8 y 128 caracteres`, fieldName, 'LENGTH');
+    }
+    
+    if (!/[a-z]/.test(password)) {
+      throw new ValidationError(`${fieldName} debe contener al menos una letra minúscula`, fieldName, 'MISSING_LOWERCASE');
+    }
+    
+    if (!/[A-Z]/.test(password)) {
+      throw new ValidationError(`${fieldName} debe contener al menos una letra mayúscula`, fieldName, 'MISSING_UPPERCASE');
+    }
+    
+    if (!/[0-9]/.test(password)) {
+      throw new ValidationError(`${fieldName} debe contener al menos un número`, fieldName, 'MISSING_NUMBER');
+    }
+    
+    if (!/[!@#$%^&*(),.?":{}|<>]/.test(password)) {
+      throw new ValidationError(`${fieldName} debe contener al menos un carácter especial (!@#$%^&*(),.?":{}|<>)`, fieldName, 'MISSING_SPECIAL');
+    }
+    
+    // Verificar patrones comunes débiles
+    const weakPatterns = [
+      /^(.)\1+$/, // Todos los caracteres iguales
+      /123456|abcdef|qwerty|password|admin|letmein/i, // Patrones comunes
+      /^[0-9]+$/, // Solo números
+      /^[a-zA-Z]+$/ // Solo letras
+    ];
+    
+    if (weakPatterns.some(pattern => pattern.test(password))) {
+      throw new ValidationError(`${fieldName} es demasiado débil. Evita patrones comunes`, fieldName, 'WEAK_PASSWORD');
+    }
+    
+    return password;
+  },
+
+  // Validación de nombre de serie terapéutica
+  validateSeriesName(name, fieldName = 'nombre de serie') {
+    if (!name || typeof name !== 'string') {
+      throw new ValidationError(`${fieldName} es obligatorio`, fieldName, 'REQUIRED');
+    }
+    
+    const cleanName = name.trim();
+    
+    if (cleanName.length < 3 || cleanName.length > 100) {
+      throw new ValidationError(`${fieldName} debe tener entre 3 y 100 caracteres`, fieldName, 'LENGTH');
+    }
+    
+    if (!REGEX_PATTERNS.seriesName.test(cleanName)) {
+      throw new ValidationError(`${fieldName} contiene caracteres no válidos`, fieldName, 'INVALID_CHARACTERS');
+    }
+    
+    return cleanName;
+  },
+
+  // Validación de tipo de terapia
+  validateTherapyType(therapyType, fieldName = 'tipo de terapia') {
+    if (!therapyType || typeof therapyType !== 'string') {
+      throw new ValidationError(`${fieldName} es obligatorio`, fieldName, 'REQUIRED');
+    }
+    
+    if (!VALID_THERAPY_TYPES.includes(therapyType)) {
+      throw new ValidationError(
+        `${fieldName} debe ser uno de los tipos válidos: ${VALID_THERAPY_TYPES.join(', ')}`, 
+        fieldName, 
+        'INVALID_TYPE'
+      );
+    }
+    
+    return therapyType;
+  },
+
+  // Validación de posturas
+  validatePostures(postures, fieldName = 'posturas') {
+    if (!Array.isArray(postures)) {
+      throw new ValidationError(`${fieldName} debe ser una lista`, fieldName, 'NOT_ARRAY');
+    }
+    
+    if (postures.length === 0) {
+      throw new ValidationError(`Debe seleccionar al menos una postura`, fieldName, 'EMPTY_ARRAY');
+    }
+    
+    if (postures.length > 50) {
+      throw new ValidationError(`No puedes seleccionar más de 50 posturas`, fieldName, 'TOO_MANY_ITEMS');
+    }
+    
+    // Validar cada postura
+    postures.forEach((posture, index) => {
+      if (!posture || typeof posture !== 'object') {
+        throw new ValidationError(`La postura en la posición ${index + 1} no es válida`, fieldName, 'INVALID_ITEM');
+      }
+      
+      if (!posture.id || !posture.name) {
+        throw new ValidationError(`La postura en la posición ${index + 1} debe tener id y nombre`, fieldName, 'MISSING_REQUIRED_FIELDS');
+      }
+    });
+    
+    return postures;
+  },
+
+  // Validación de número de sesiones
+  validateTotalSessions(totalSessions, fieldName = 'total de sesiones') {
+    if (totalSessions === null || totalSessions === undefined || totalSessions === '') {
+      throw new ValidationError(`${fieldName} es obligatorio`, fieldName, 'REQUIRED');
+    }
+    
+    const numSessions = parseInt(totalSessions, 10);
+    
+    if (isNaN(numSessions)) {
+      throw new ValidationError(`${fieldName} debe ser un número válido`, fieldName, 'NOT_A_NUMBER');
+    }
+    
+    if (numSessions < 1 || numSessions > 100) {
+      throw new ValidationError(`${fieldName} debe estar entre 1 y 100`, fieldName, 'OUT_OF_RANGE');
+    }
+    
+    return numSessions;
+  },
+
+  // Validación de nivel de dolor
+  validatePainLevel(painLevel, fieldName = 'nivel de dolor') {
+    if (painLevel === null || painLevel === undefined || painLevel === '') {
+      throw new ValidationError(`${fieldName} es obligatorio`, fieldName, 'REQUIRED');
+    }
+    
+    const numPain = parseInt(painLevel, 10);
+    
+    if (isNaN(numPain)) {
+      throw new ValidationError(`${fieldName} debe ser un número válido`, fieldName, 'NOT_A_NUMBER');
+    }
+    
+    if (numPain < 0 || numPain > 10) {
+      throw new ValidationError(`${fieldName} debe estar entre 0 y 10`, fieldName, 'OUT_OF_RANGE');
+    }
+    
+    return numPain;
+  },
+
+  // Validación de comentarios
+  validateComments(comments, fieldName = 'comentarios', minLength = 10) {
+    if (!comments || typeof comments !== 'string') {
+      throw new ValidationError(`${fieldName} son obligatorios`, fieldName, 'REQUIRED');
+    }
+    
+    const cleanComments = comments.trim();
+    
+    if (cleanComments.length < minLength) {
+      throw new ValidationError(`${fieldName} debe tener al menos ${minLength} caracteres`, fieldName, 'TOO_SHORT');
+    }
+    
+    if (cleanComments.length > 1000) {
+      throw new ValidationError(`${fieldName} no puede exceder 1000 caracteres`, fieldName, 'TOO_LONG');
+    }
+    
+    // Verificar que no sea solo caracteres especiales o números
+    if (!/[a-zA-ZáéíóúÁÉÍÓÚñÑ]/.test(cleanComments)) {
+      throw new ValidationError(`${fieldName} debe contener texto descriptivo`, fieldName, 'INVALID_CONTENT');
+    }
+    
+    return cleanComments;
+  },
+
+  // Validación de duración
+  validateDuration(duration, fieldName = 'duración') {
+    if (duration === null || duration === undefined || duration === '') {
+      return 30; // Valor por defecto
+    }
+    
+    const numDuration = parseInt(duration, 10);
+    
+    if (isNaN(numDuration)) {
+      throw new ValidationError(`${fieldName} debe ser un número válido`, fieldName, 'NOT_A_NUMBER');
+    }
+    
+    if (numDuration < 5 || numDuration > 180) {
+      throw new ValidationError(`${fieldName} debe estar entre 5 y 180 minutos`, fieldName, 'OUT_OF_RANGE');
+    }
+    
+    return numDuration;
+  },
+
+  // Validación de rol de usuario
+  validateUserRole(role, fieldName = 'rol') {
+    if (!role) {
+      return 'instructor'; // Valor por defecto
+    }
+    
+    const validRoles = ['instructor', 'patient', 'admin'];
+    
+    if (!validRoles.includes(role)) {
+      throw new ValidationError(`${fieldName} debe ser uno de: ${validRoles.join(', ')}`, fieldName, 'INVALID_ROLE');
+    }
+    
+    return role;
+  }
+};
+
+// Middleware de manejo de errores de validación
+const handleValidationError = (error, req, res, next) => {
+  if (error instanceof ValidationError) {
+    return res.status(error.statusCode).json({
+      error: error.message,
+      field: error.field,
+      code: error.code,
+      type: 'validation_error'
+    });
+  }
+  next(error);
+};
+
+// =============================================
+// RESTO DEL CÓDIGO ORIGINAL CON VALIDACIONES APLICADAS
+// =============================================
 
 // Middleware optimizado
 app.use(cors({
@@ -211,72 +566,28 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Auth routes
+// Auth routes CON VALIDACIONES ROBUSTAS
 app.post('/api/register', async (req, res) => {
   try {
     const { email, password, name, role } = req.body;
 
-    if (!email || !password || !name) {
-      return res.status(400).json({
-        error: 'Todos los campos son obligatorios',
-        details: { email: !email, password: !password, name: !name }
-      });
-    }
+    // Validaciones robustas
+    const validatedEmail = validators.validateEmail(email);
+    const validatedPassword = validators.validatePassword(password);
+    const validatedName = validators.validateName(name);
+    const validatedRole = validators.validateUserRole(role);
 
-
-
-
-
-
-
-
-    if (password.length < 6) {
-      return res.status(400).json({
-        error: 'La contraseña debe tener al menos 6 caracteres'
-      });
-    }
-
-    // Verificar que tenga al menos una mayúscula
-    if (!/[A-Z]/.test(password)) {
-      return res.status(400).json({
-        error: 'La contraseña debe contener al menos una letra mayúscula'
-      });
-    }
-
-    // Verificar que tenga al menos un número
-    if (!/[0-9]/.test(password)) {
-      return res.status(400).json({
-        error: 'La contraseña debe contener al menos un número'
-      });
-    }
-
-    // Verificar que tenga al menos un carácter especial
-    if (!/[!@#$%^&*(),.?":{}|<>]/.test(password)) {
-      return res.status(400).json({
-        error: 'La contraseña debe contener al menos un carácter especial'
-      });
-    }
-
-
-
-
-
-
-
-
-
-
-
-    const existingUser = await query('SELECT id FROM users WHERE email = $1', [email]);
+    // Verificar que el usuario no exista
+    const existingUser = await query('SELECT id FROM users WHERE email = $1', [validatedEmail]);
     if (existingUser.rows.length > 0) {
-      return res.status(400).json({ error: 'El usuario ya existe' });
+      throw new ValidationError('Ya existe un usuario con este email', 'email', 'DUPLICATE_EMAIL');
     }
 
-    const hashedPassword = await bcrypt.hash(password, 12);
+    const hashedPassword = await bcrypt.hash(validatedPassword, 12);
 
     const result = await query(
       'INSERT INTO users (email, password, name, role) VALUES ($1, $2, $3, $4) RETURNING id, email, name, role',
-      [email, hashedPassword, name, role || 'instructor']
+      [validatedEmail, hashedPassword, validatedName, validatedRole]
     );
 
     const user = result.rows[0];
@@ -285,8 +596,23 @@ app.post('/api/register', async (req, res) => {
 
     const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
 
-    res.json({ token, user, message: 'Usuario registrado exitosamente' });
+    res.json({ 
+      token, 
+      user, 
+      message: 'Usuario registrado exitosamente',
+      validation_passed: true 
+    });
+
   } catch (error) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({
+        error: error.message,
+        field: error.field,
+        code: error.code,
+        type: 'validation_error'
+      });
+    }
+    
     console.error('Registration error:', error);
     res.status(500).json({ error: 'Error del servidor' });
   }
@@ -296,15 +622,18 @@ app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email y contraseña son obligatorios' });
+    // Validaciones robustas
+    const validatedEmail = validators.validateEmail(email);
+    
+    if (!password || typeof password !== 'string') {
+      throw new ValidationError('La contraseña es obligatoria', 'password', 'REQUIRED');
     }
 
-    const userResult = await query('SELECT * FROM users WHERE email = $1 AND is_active = TRUE', [email]);
+    const userResult = await query('SELECT * FROM users WHERE email = $1 AND is_active = TRUE', [validatedEmail]);
     const user = userResult.rows[0];
 
     if (!user || !await bcrypt.compare(password, user.password)) {
-      return res.status(400).json({ error: 'Credenciales inválidas' });
+      throw new ValidationError('Credenciales inválidas', 'credentials', 'INVALID_CREDENTIALS');
     }
 
     await query('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1', [user.id]);
@@ -322,13 +651,23 @@ app.post('/api/login', async (req, res) => {
       user: { id: user.id, email: user.email, name: user.name, role: user.role },
       message: 'Inicio de sesión exitoso'
     });
+
   } catch (error) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({
+        error: error.message,
+        field: error.field,
+        code: error.code,
+        type: 'validation_error'
+      });
+    }
+    
     console.error('Login error:', error);
     res.status(500).json({ error: 'Error del servidor' });
   }
 });
 
-// Patient routes optimizadas con cache
+// Patient routes CON VALIDACIONES ROBUSTAS
 app.get('/api/patients', authenticateToken, cacheMiddleware(), async (req, res) => {
   try {
     if (req.user.role !== 'instructor') {
@@ -366,26 +705,52 @@ app.post('/api/patients', authenticateToken, async (req, res) => {
 
     const { name, email, age, condition } = req.body;
 
-    if (!name || !email || !age) {
-      return res.status(400).json({ error: 'Nombre, email y edad son obligatorios' });
-    }
+    // Validaciones robustas
+    const validatedName = validators.validateName(name, 'nombre del paciente');
+    const validatedEmail = validators.validateEmail(email, 'email del paciente');
+    const validatedAge = validators.validateAge(age, 'edad del paciente');
+    const validatedCondition = validators.validateMedicalCondition(condition, 'condición médica');
 
-    if (age < 1 || age > 120) {
-      return res.status(400).json({ error: 'Edad debe estar entre 1 y 120 años' });
+    // Verificar que no exista otro paciente con el mismo email para este instructor
+    const existingPatient = await query(
+      'SELECT id FROM patients WHERE email = $1 AND instructor_id = $2 AND is_active = TRUE', 
+      [validatedEmail, req.user.id]
+    );
+    
+    if (existingPatient.rows.length > 0) {
+      throw new ValidationError('Ya tienes un paciente registrado con este email', 'email', 'DUPLICATE_PATIENT_EMAIL');
     }
 
     const result = await query(
       'INSERT INTO patients (name, email, age, condition, instructor_id) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [name, email, age, condition, req.user.id]
+      [validatedName, validatedEmail, validatedAge, validatedCondition, req.user.id]
     );
 
     const patient = result.rows[0];
 
     clearCache('patients');
-    await logAnalyticsEvent(req.user.id, 'patient_created', { patientId: patient.id });
+    await logAnalyticsEvent(req.user.id, 'patient_created', { 
+      patientId: patient.id, 
+      age: validatedAge, 
+      condition: validatedCondition 
+    });
 
-    res.json({ ...patient, message: 'Paciente creado exitosamente' });
+    res.json({ 
+      ...patient, 
+      message: 'Paciente creado exitosamente',
+      validation_passed: true 
+    });
+
   } catch (error) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({
+        error: error.message,
+        field: error.field,
+        code: error.code,
+        type: 'validation_error'
+      });
+    }
+    
     console.error('Create patient error:', error);
     res.status(500).json({ error: 'Error del servidor' });
   }
@@ -400,12 +765,33 @@ app.put('/api/patients/:id', authenticateToken, async (req, res) => {
     const patientId = parseInt(req.params.id);
     const { name, email, age, condition } = req.body;
 
+    // Validar ID del paciente
+    if (isNaN(patientId) || patientId <= 0) {
+      throw new ValidationError('ID de paciente inválido', 'id', 'INVALID_ID');
+    }
+
+    // Validaciones robustas
+    const validatedName = validators.validateName(name, 'nombre del paciente');
+    const validatedEmail = validators.validateEmail(email, 'email del paciente');
+    const validatedAge = validators.validateAge(age, 'edad del paciente');
+    const validatedCondition = validators.validateMedicalCondition(condition, 'condición médica');
+
+    // Verificar que no exista otro paciente con el mismo email (excluyendo el actual)
+    const existingPatient = await query(
+      'SELECT id FROM patients WHERE email = $1 AND instructor_id = $2 AND id != $3 AND is_active = TRUE', 
+      [validatedEmail, req.user.id, patientId]
+    );
+    
+    if (existingPatient.rows.length > 0) {
+      throw new ValidationError('Ya tienes otro paciente registrado con este email', 'email', 'DUPLICATE_PATIENT_EMAIL');
+    }
+
     const result = await query(`
       UPDATE patients 
       SET name = $1, email = $2, age = $3, condition = $4, updated_at = CURRENT_TIMESTAMP 
       WHERE id = $5 AND instructor_id = $6
       RETURNING *
-    `, [name, email, age, condition, patientId, req.user.id]);
+    `, [validatedName, validatedEmail, validatedAge, validatedCondition, patientId, req.user.id]);
 
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Paciente no encontrado' });
@@ -414,10 +800,27 @@ app.put('/api/patients/:id', authenticateToken, async (req, res) => {
     const patient = result.rows[0];
 
     clearCache('patients');
-    await logAnalyticsEvent(req.user.id, 'patient_updated', { patientId });
+    await logAnalyticsEvent(req.user.id, 'patient_updated', { 
+      patientId,
+      changes: { name: validatedName, email: validatedEmail, age: validatedAge, condition: validatedCondition }
+    });
 
-    res.json({ ...patient, message: 'Paciente actualizado exitosamente' });
+    res.json({ 
+      ...patient, 
+      message: 'Paciente actualizado exitosamente',
+      validation_passed: true 
+    });
+
   } catch (error) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({
+        error: error.message,
+        field: error.field,
+        code: error.code,
+        type: 'validation_error'
+      });
+    }
+    
     console.error('Update patient error:', error);
     res.status(500).json({ error: 'Error del servidor' });
   }
@@ -430,6 +833,11 @@ app.delete('/api/patients/:id', authenticateToken, async (req, res) => {
     }
 
     const patientId = parseInt(req.params.id);
+
+    // Validar ID del paciente
+    if (isNaN(patientId) || patientId <= 0) {
+      throw new ValidationError('ID de paciente inválido', 'id', 'INVALID_ID');
+    }
 
     // Soft delete
     const result = await query(
@@ -445,7 +853,17 @@ app.delete('/api/patients/:id', authenticateToken, async (req, res) => {
     await logAnalyticsEvent(req.user.id, 'patient_deleted', { patientId });
 
     res.json({ message: 'Paciente eliminado exitosamente' });
+
   } catch (error) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({
+        error: error.message,
+        field: error.field,
+        code: error.code,
+        type: 'validation_error'
+      });
+    }
+    
     console.error('Delete patient error:', error);
     res.status(500).json({ error: 'Error del servidor' });
   }
@@ -461,14 +879,13 @@ app.get('/api/therapy-types', authenticateToken, cacheMiddleware(30 * 60 * 1000)
   res.json(types);
 });
 
-// Therapy series routes optimizadas
+// Therapy series routes CON VALIDACIONES ROBUSTAS
 app.get('/api/therapy-series', authenticateToken, cacheMiddleware(), async (req, res) => {
   try {
     if (req.user.role !== 'instructor') {
       return res.status(403).json({ error: 'Acceso denegado' });
     }
 
-    // En PostgreSQL usamos el operador -> para extraer valores JSON
     const seriesResult = await query(`
       SELECT ts.*, 
              COUNT(DISTINCT p.id) as assigned_patients_count,
@@ -493,6 +910,84 @@ app.get('/api/therapy-series', authenticateToken, cacheMiddleware(), async (req,
   }
 });
 
+app.post('/api/therapy-series', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'instructor') {
+      return res.status(403).json({ error: 'Acceso denegado' });
+    }
+
+    const { name, therapyType, postures, totalSessions } = req.body;
+
+    // Validaciones robustas
+    const validatedName = validators.validateSeriesName(name, 'nombre de la serie');
+    const validatedTherapyType = validators.validateTherapyType(therapyType);
+    const validatedPostures = validators.validatePostures(postures);
+    const validatedTotalSessions = validators.validateTotalSessions(totalSessions);
+
+    // Verificar que no exista una serie con el mismo nombre para este instructor
+    const existingSeries = await query(
+      'SELECT id FROM therapy_series WHERE name = $1 AND instructor_id = $2 AND is_active = TRUE',
+      [validatedName, req.user.id]
+    );
+
+    if (existingSeries.rows.length > 0) {
+      throw new ValidationError('Ya tienes una serie con este nombre', 'name', 'DUPLICATE_SERIES_NAME');
+    }
+
+    // Validar que las posturas pertenezcan al tipo de terapia seleccionado
+    const availablePostures = therapyTypes[validatedTherapyType];
+    if (!availablePostures) {
+      throw new ValidationError('Tipo de terapia no válido', 'therapyType', 'INVALID_THERAPY_TYPE');
+    }
+
+    const availablePostureIds = availablePostures.map(p => p.id);
+    const invalidPostures = validatedPostures.filter(p => !availablePostureIds.includes(p.id));
+    
+    if (invalidPostures.length > 0) {
+      throw new ValidationError(
+        `Las siguientes posturas no pertenecen al tipo de terapia "${validatedTherapyType}": ${invalidPostures.map(p => p.name).join(', ')}`,
+        'postures',
+        'INVALID_POSTURES_FOR_THERAPY_TYPE'
+      );
+    }
+
+    const result = await query(
+      'INSERT INTO therapy_series (name, therapy_type, postures, total_sessions, instructor_id) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [validatedName, validatedTherapyType, JSON.stringify(validatedPostures), validatedTotalSessions, req.user.id]
+    );
+
+    const series = result.rows[0];
+
+    clearCache('therapy-series');
+    await logAnalyticsEvent(req.user.id, 'series_created', {
+      seriesId: series.id,
+      therapyType: validatedTherapyType,
+      posturesCount: validatedPostures.length,
+      totalSessions: validatedTotalSessions
+    });
+
+    res.json({
+      ...series,
+      postures: JSON.parse(series.postures),
+      message: 'Serie creada exitosamente',
+      validation_passed: true
+    });
+
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({
+        error: error.message,
+        field: error.field,
+        code: error.code,
+        type: 'validation_error'
+      });
+    }
+    
+    console.error('Create therapy series error:', error);
+    res.status(500).json({ error: 'Error del servidor' });
+  }
+});
+
 app.delete('/api/therapy-series/:id', authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'instructor') {
@@ -500,6 +995,11 @@ app.delete('/api/therapy-series/:id', authenticateToken, async (req, res) => {
     }
 
     const seriesId = parseInt(req.params.id);
+
+    // Validar ID de la serie
+    if (isNaN(seriesId) || seriesId <= 0) {
+      throw new ValidationError('ID de serie inválido', 'id', 'INVALID_ID');
+    }
 
     const seriesResult = await query(
       'SELECT * FROM therapy_series WHERE id = $1 AND instructor_id = $2',
@@ -519,9 +1019,11 @@ app.delete('/api/therapy-series/:id', authenticateToken, async (req, res) => {
     `, [req.user.id, seriesId]);
 
     if (assignedPatients.rows.length > 0) {
-      return res.status(400).json({
-        error: 'No se puede eliminar una serie que tiene pacientes asignados'
-      });
+      throw new ValidationError(
+        'No se puede eliminar una serie que tiene pacientes asignados', 
+        'series', 
+        'SERIES_HAS_ASSIGNED_PATIENTS'
+      );
     }
 
     // Soft delete
@@ -534,49 +1036,18 @@ app.delete('/api/therapy-series/:id', authenticateToken, async (req, res) => {
     await logAnalyticsEvent(req.user.id, 'series_deleted', { seriesId });
 
     res.json({ message: 'Serie eliminada exitosamente' });
+
   } catch (error) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({
+        error: error.message,
+        field: error.field,
+        code: error.code,
+        type: 'validation_error'
+      });
+    }
+    
     console.error('Delete therapy series error:', error);
-    res.status(500).json({ error: 'Error del servidor' });
-  }
-});
-
-app.post('/api/therapy-series', authenticateToken, async (req, res) => {
-  try {
-    if (req.user.role !== 'instructor') {
-      return res.status(403).json({ error: 'Acceso denegado' });
-    }
-
-    const { name, therapyType, postures, totalSessions } = req.body;
-
-    if (!name || !therapyType || !postures || !totalSessions) {
-      return res.status(400).json({ error: 'Todos los campos son obligatorios' });
-    }
-
-    if (postures.length === 0) {
-      return res.status(400).json({ error: 'Debe seleccionar al menos una postura' });
-    }
-
-    const result = await query(
-      'INSERT INTO therapy_series (name, therapy_type, postures, total_sessions, instructor_id) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [name, therapyType, JSON.stringify(postures), totalSessions, req.user.id]
-    );
-
-    const series = result.rows[0];
-
-    clearCache('therapy-series');
-    await logAnalyticsEvent(req.user.id, 'series_created', {
-      seriesId: series.id,
-      therapyType,
-      posturesCount: postures.length
-    });
-
-    res.json({
-      ...series,
-      postures: JSON.parse(series.postures),
-      message: 'Serie creada exitosamente'
-    });
-  } catch (error) {
-    console.error('Create therapy series error:', error);
     res.status(500).json({ error: 'Error del servidor' });
   }
 });
@@ -680,18 +1151,35 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
 
 app.put('/api/notifications/:id/read', authenticateToken, async (req, res) => {
   try {
+    const notificationId = parseInt(req.params.id);
+
+    // Validar ID de notificación
+    if (isNaN(notificationId) || notificationId <= 0) {
+      throw new ValidationError('ID de notificación inválido', 'id', 'INVALID_ID');
+    }
+
     await query(
       'UPDATE notifications SET is_read = TRUE WHERE id = $1 AND user_id = $2',
-      [req.params.id, req.user.id]
+      [notificationId, req.user.id]
     );
     res.json({ message: 'Notificación marcada como leída' });
+
   } catch (error) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({
+        error: error.message,
+        field: error.field,
+        code: error.code,
+        type: 'validation_error'
+      });
+    }
+    
     console.error('Mark notification read error:', error);
     res.status(500).json({ error: 'Error del servidor' });
   }
 });
 
-// Export reports endpoint
+// Export reports endpoint CON VALIDACIONES
 app.get('/api/reports/export', authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'instructor') {
@@ -700,12 +1188,39 @@ app.get('/api/reports/export', authenticateToken, async (req, res) => {
 
     const { format = 'json', dateFrom, dateTo } = req.query;
 
+    // Validar formato de reporte
+    const validFormats = ['json', 'csv'];
+    if (!validFormats.includes(format)) {
+      throw new ValidationError(`Formato debe ser uno de: ${validFormats.join(', ')}`, 'format', 'INVALID_FORMAT');
+    }
+
+    // Validar fechas si se proporcionan
+    let validatedDateFrom, validatedDateTo;
+    if (dateFrom) {
+      validatedDateFrom = new Date(dateFrom);
+      if (isNaN(validatedDateFrom.getTime())) {
+        throw new ValidationError('Fecha de inicio inválida', 'dateFrom', 'INVALID_DATE');
+      }
+    }
+
+    if (dateTo) {
+      validatedDateTo = new Date(dateTo);
+      if (isNaN(validatedDateTo.getTime())) {
+        throw new ValidationError('Fecha de fin inválida', 'dateTo', 'INVALID_DATE');
+      }
+    }
+
+    // Validar que dateFrom no sea posterior a dateTo
+    if (validatedDateFrom && validatedDateTo && validatedDateFrom > validatedDateTo) {
+      throw new ValidationError('La fecha de inicio no puede ser posterior a la fecha de fin', 'dateFrom', 'INVALID_DATE_RANGE');
+    }
+
     let dateFilter = '';
     let params = [req.user.id];
 
-    if (dateFrom && dateTo) {
+    if (validatedDateFrom && validatedDateTo) {
       dateFilter = 'AND s.completed_at BETWEEN $2 AND $3';
-      params.push(dateFrom, dateTo);
+      params.push(validatedDateFrom.toISOString(), validatedDateTo.toISOString());
     }
 
     const reportResult = await query(`
@@ -735,7 +1250,7 @@ app.get('/api/reports/export', authenticateToken, async (req, res) => {
     await logAnalyticsEvent(req.user.id, 'report_exported', {
       format,
       recordCount: reportData.length,
-      dateFilter: { dateFrom, dateTo }
+      dateFilter: { dateFrom: validatedDateFrom, dateTo: validatedDateTo }
     });
 
     if (format === 'csv') {
@@ -753,7 +1268,7 @@ app.get('/api/reports/export', authenticateToken, async (req, res) => {
           row.pain_after,
           row.pain_improvement,
           row.duration_minutes,
-          `"${row.comments}"`,
+          `"${(row.comments || '').replace(/"/g, '""')}"`, // Escapar comillas dobles
           row.completed_at
         ].join(','))
       ].join('\n');
@@ -770,16 +1285,26 @@ app.get('/api/reports/export', authenticateToken, async (req, res) => {
       summary: {
         total_sessions: reportData.length,
         avg_pain_improvement: reportData.reduce((sum, row) => sum + row.pain_improvement, 0) / reportData.length || 0,
-        date_range: { dateFrom, dateTo }
+        date_range: { dateFrom: validatedDateFrom, dateTo: validatedDateTo }
       }
     });
+
   } catch (error) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({
+        error: error.message,
+        field: error.field,
+        code: error.code,
+        type: 'validation_error'
+      });
+    }
+    
     console.error('Export reports error:', error);
     res.status(500).json({ error: 'Error del servidor' });
   }
 });
 
-// Assign series optimizado
+// Assign series CON VALIDACIONES ROBUSTAS
 app.post('/api/patients/:id/assign-series', authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'instructor') {
@@ -789,16 +1314,31 @@ app.post('/api/patients/:id/assign-series', authenticateToken, async (req, res) 
     const patientId = parseInt(req.params.id);
     const { seriesId } = req.body;
 
+    // Validaciones robustas
+    if (isNaN(patientId) || patientId <= 0) {
+      throw new ValidationError('ID de paciente inválido', 'patientId', 'INVALID_ID');
+    }
+
+    if (!seriesId || isNaN(parseInt(seriesId)) || parseInt(seriesId) <= 0) {
+      throw new ValidationError('ID de serie inválido', 'seriesId', 'INVALID_ID');
+    }
+
+    const validatedSeriesId = parseInt(seriesId);
+
     const [patientResult, seriesResult] = await Promise.all([
-      query('SELECT * FROM patients WHERE id = $1 AND instructor_id = $2', [patientId, req.user.id]),
-      query('SELECT * FROM therapy_series WHERE id = $1 AND instructor_id = $2', [seriesId, req.user.id])
+      query('SELECT * FROM patients WHERE id = $1 AND instructor_id = $2 AND is_active = TRUE', [patientId, req.user.id]),
+      query('SELECT * FROM therapy_series WHERE id = $1 AND instructor_id = $2 AND is_active = TRUE', [validatedSeriesId, req.user.id])
     ]);
 
     const patient = patientResult.rows[0];
     const series = seriesResult.rows[0];
 
-    if (!patient || !series) {
-      return res.status(404).json({ error: 'Paciente o serie no encontrados' });
+    if (!patient) {
+      return res.status(404).json({ error: 'Paciente no encontrado o inactivo' });
+    }
+
+    if (!series) {
+      return res.status(404).json({ error: 'Serie no encontrada o inactiva' });
     }
 
     const seriesData = {
@@ -828,22 +1368,33 @@ app.post('/api/patients/:id/assign-series', authenticateToken, async (req, res) 
     clearCache('patients');
     await logAnalyticsEvent(req.user.id, 'series_assigned', {
       patientId,
-      seriesId,
+      seriesId: validatedSeriesId,
       seriesName: series.name
     });
 
     res.json({
       ...updatedPatient,
       assignedSeries: JSON.parse(updatedPatient.assigned_series),
-      message: 'Serie asignada exitosamente'
+      message: 'Serie asignada exitosamente',
+      validation_passed: true
     });
+
   } catch (error) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({
+        error: error.message,
+        field: error.field,
+        code: error.code,
+        type: 'validation_error'
+      });
+    }
+    
     console.error('Assign series error:', error);
     res.status(500).json({ error: 'Error del servidor' });
   }
 });
 
-// Patient session routes mejoradas
+// Patient session routes CON VALIDACIONES ROBUSTAS
 app.get('/api/my-series', authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'patient') {
@@ -877,10 +1428,17 @@ app.post('/api/sessions', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Acceso denegado' });
     }
 
-    const { painBefore, painAfter, comments, durationMinutes = 30 } = req.body;
+    const { painBefore, painAfter, comments, durationMinutes } = req.body;
 
-    if (!comments || comments.trim().length < 10) {
-      return res.status(400).json({ error: 'Los comentarios deben tener al menos 10 caracteres' });
+    // Validaciones robustas
+    const validatedPainBefore = validators.validatePainLevel(painBefore, 'dolor antes');
+    const validatedPainAfter = validators.validatePainLevel(painAfter, 'dolor después');
+    const validatedComments = validators.validateComments(comments, 'comentarios', 10);
+    const validatedDuration = validators.validateDuration(durationMinutes, 'duración');
+
+    // Validación lógica: el dolor después no debería ser mayor al dolor antes (aunque es posible)
+    if (validatedPainAfter > validatedPainBefore + 2) {
+      console.warn(`Pain increased significantly for user ${req.user.id}: ${validatedPainBefore} -> ${validatedPainAfter}`);
     }
 
     const patientResult = await query('SELECT * FROM patients WHERE email = $1 AND is_active = TRUE', [req.user.email]);
@@ -890,15 +1448,28 @@ app.post('/api/sessions', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Paciente no encontrado' });
     }
 
+    if (!patient.assigned_series) {
+      throw new ValidationError('No tienes una serie asignada para completar sesiones', 'assigned_series', 'NO_ASSIGNED_SERIES');
+    }
+
     const assignedSeries = JSON.parse(patient.assigned_series);
     const sessionNumber = (patient.current_session || 0) + 1;
+
+    // Validar que no se exceda el número total de sesiones
+    if (sessionNumber > assignedSeries.total_sessions) {
+      throw new ValidationError(
+        `Ya has completado todas las sesiones de esta serie (${assignedSeries.total_sessions})`, 
+        'session_number', 
+        'SERIES_COMPLETED'
+      );
+    }
 
     // Insertar sesión
     const result = await query(`
       INSERT INTO sessions (patient_id, series_id, session_number, pain_before, pain_after, comments, duration_minutes) 
       VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *
-    `, [patient.id, assignedSeries.id, sessionNumber, painBefore, painAfter, comments, durationMinutes]);
+    `, [patient.id, assignedSeries.id, sessionNumber, validatedPainBefore, validatedPainAfter, validatedComments, validatedDuration]);
 
     // Actualizar sesión actual del paciente
     await query(
@@ -907,28 +1478,48 @@ app.post('/api/sessions', authenticateToken, async (req, res) => {
     );
 
     // Crear notificación para el instructor
+    const painImprovement = validatedPainBefore - validatedPainAfter;
+    const improvementText = painImprovement > 0 ? `una mejora de ${painImprovement} puntos` : 
+                           painImprovement < 0 ? `un aumento de ${Math.abs(painImprovement)} puntos` : 
+                           'sin cambios en el dolor';
+
     await query(`
       INSERT INTO notifications (user_id, type, title, message) 
       VALUES ($1, 'session_completed', 'Sesión Completada', $2)
-    `, [patient.instructor_id, `${patient.name} completó la sesión ${sessionNumber} con una mejora de dolor de ${painBefore - painAfter} puntos.`]);
+    `, [patient.instructor_id, `${patient.name} completó la sesión ${sessionNumber} con ${improvementText}.`]);
 
     const session = result.rows[0];
 
     clearCache('patients');
     await logAnalyticsEvent(req.user.id, 'session_completed', {
       sessionId: session.id,
-      painImprovement: painBefore - painAfter,
-      sessionNumber
+      painImprovement,
+      sessionNumber,
+      duration: validatedDuration
     });
 
-    res.json({ ...session, message: 'Sesión completada exitosamente' });
+    res.json({ 
+      ...session, 
+      message: 'Sesión completada exitosamente',
+      validation_passed: true 
+    });
+
   } catch (error) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({
+        error: error.message,
+        field: error.field,
+        code: error.code,
+        type: 'validation_error'
+      });
+    }
+    
     console.error('Create session error:', error);
     res.status(500).json({ error: 'Error del servidor' });
   }
 });
 
-// Get patient sessions mejorado
+// Get patient sessions CON VALIDACIONES
 app.get('/api/patients/:id/sessions', authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'instructor') {
@@ -936,6 +1527,11 @@ app.get('/api/patients/:id/sessions', authenticateToken, async (req, res) => {
     }
 
     const patientId = parseInt(req.params.id);
+
+    // Validar ID del paciente
+    if (isNaN(patientId) || patientId <= 0) {
+      throw new ValidationError('ID de paciente inválido', 'id', 'INVALID_ID');
+    }
 
     const patientResult = await query(
       'SELECT * FROM patients WHERE id = $1 AND instructor_id = $2',
@@ -956,7 +1552,17 @@ app.get('/api/patients/:id/sessions', authenticateToken, async (req, res) => {
     `, [patientId]);
 
     res.json(sessionsResult.rows);
+
   } catch (error) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({
+        error: error.message,
+        field: error.field,
+        code: error.code,
+        type: 'validation_error'
+      });
+    }
+    
     console.error('Get patient sessions error:', error);
     res.status(500).json({ error: 'Error del servidor' });
   }
@@ -972,7 +1578,8 @@ app.get('/api/health', async (req, res) => {
       timestamp: new Date().toISOString(),
       cache_size: cache.size,
       uptime: process.uptime(),
-      database: 'connected'
+      database: 'connected',
+      validation_system: 'active'
     });
   } catch (error) {
     res.status(500).json({
@@ -983,15 +1590,127 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
+// =============================================
+// NUEVOS ENDPOINTS PARA GESTIÓN DE VALIDACIONES
+// =============================================
+
+// Endpoint para obtener las condiciones médicas válidas
+app.get('/api/medical-conditions', authenticateToken, (req, res) => {
+  const conditions = VALID_MEDICAL_CONDITIONS.map(condition => ({
+    value: condition,
+    label: condition.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
+  }));
+  
+  res.json(conditions);
+});
+
+// Endpoint para validar datos antes del envío (validación previa)
+app.post('/api/validate', authenticateToken, async (req, res) => {
+  try {
+    const { type, data } = req.body;
+    
+    if (!type || !data) {
+      throw new ValidationError('Tipo y datos son obligatorios para validación', 'validation', 'MISSING_PARAMS');
+    }
+
+    let validationResults = { valid: true, errors: [] };
+
+    switch (type) {
+      case 'patient':
+        try {
+          validators.validateName(data.name, 'nombre');
+          validators.validateEmail(data.email, 'email');
+          validators.validateAge(data.age, 'edad');
+          validators.validateMedicalCondition(data.condition, 'condición');
+        } catch (error) {
+          validationResults.valid = false;
+          validationResults.errors.push({
+            field: error.field,
+            message: error.message,
+            code: error.code
+          });
+        }
+        break;
+
+      case 'series':
+        try {
+          validators.validateSeriesName(data.name, 'nombre');
+          validators.validateTherapyType(data.therapyType, 'tipo de terapia');
+          validators.validatePostures(data.postures, 'posturas');
+          validators.validateTotalSessions(data.totalSessions, 'total de sesiones');
+        } catch (error) {
+          validationResults.valid = false;
+          validationResults.errors.push({
+            field: error.field,
+            message: error.message,
+            code: error.code
+          });
+        }
+        break;
+
+      case 'session':
+        try {
+          validators.validatePainLevel(data.painBefore, 'dolor antes');
+          validators.validatePainLevel(data.painAfter, 'dolor después');
+          validators.validateComments(data.comments, 'comentarios');
+          validators.validateDuration(data.durationMinutes, 'duración');
+        } catch (error) {
+          validationResults.valid = false;
+          validationResults.errors.push({
+            field: error.field,
+            message: error.message,
+            code: error.code
+          });
+        }
+        break;
+
+      default:
+        throw new ValidationError('Tipo de validación no soportado', 'type', 'UNSUPPORTED_TYPE');
+    }
+
+    res.json(validationResults);
+
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({
+        error: error.message,
+        field: error.field,
+        code: error.code,
+        type: 'validation_error'
+      });
+    }
+    
+    console.error('Validation error:', error);
+    res.status(500).json({ error: 'Error del servidor' });
+  }
+});
+
 // Serve frontend
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Error handling middleware
+// Error handling middleware MEJORADO
+app.use(handleValidationError);
+
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
-  res.status(500).json({ error: 'Error interno del servidor' });
+  
+  // Log del error para debugging
+  const errorDetails = {
+    message: err.message,
+    stack: err.stack,
+    url: req.originalUrl,
+    method: req.method,
+    timestamp: new Date().toISOString()
+  };
+  
+  console.error('Error details:', errorDetails);
+  
+  res.status(500).json({ 
+    error: 'Error interno del servidor',
+    timestamp: errorDetails.timestamp
+  });
 });
 
 // Limpiar cache periódicamente
@@ -1011,6 +1730,8 @@ initDatabase().then(() => {
     console.log(`📊 PostgreSQL database connected`);
     console.log(`💾 Cache system active`);
     console.log(`📈 Analytics tracking enabled`);
+    console.log(`✅ Robust validation system activated`);
+    console.log(`🛡️  Security validations implemented`);
   });
 }).catch(error => {
   console.error('Failed to initialize database:', error);
