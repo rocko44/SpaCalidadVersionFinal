@@ -28,11 +28,11 @@
                 </div>
 
                 <div class="auth-tabs">
-                    <button class="tab-btn active" data-tab="login">Iniciar Sesión</button>
-                    <button class="tab-btn" data-tab="register">Registrarse</button>
+                    <button class="tab-btn active" data-tab="login" tabindex="0">Iniciar Sesión</button>
+                    <button class="tab-btn" data-tab="register" tabindex="0">Registrarse</button>
                 </div>
 
-                <form id="login-form" class="auth-form">
+                <form id="login-form" class="auth-form" role="form">
                     <div class="form-group">
                         <label for="login-email">Email</label>
                         <input type="email" id="login-email" required>
@@ -44,7 +44,7 @@
                     <button type="submit" class="btn-primary">Iniciar Sesión</button>
                 </form>
 
-                <form id="register-form" class="auth-form hidden">
+                <form id="register-form" class="auth-form hidden" role="form">
                     <div class="form-group">
                         <label for="register-name">Nombre</label>
                         <input type="text" id="register-name" required>
@@ -72,21 +72,21 @@
 
         <!-- Instructor Dashboard -->
         <div id="instructor-dashboard" class="screen hidden">
-            <nav class="navbar">
+            <nav class="navbar" role="navigation">
                 <div class="nav-brand">Yoga Terapéutico Online</div>
                 <div class="nav-menu">
-                    <button class="nav-btn active" data-view="dashboard">📊 Dashboard</button>
-                    <button class="nav-btn" data-view="patients">👥 Pacientes</button>
-                    <button class="nav-btn" data-view="series">🧘‍♀️ Series</button>
-                    <button class="nav-btn" data-view="create-series">➕ Crear Serie</button>
+                    <button class="nav-btn active" data-view="dashboard" tabindex="0">📊 Dashboard</button>
+                    <button class="nav-btn" data-view="patients" tabindex="0">👥 Pacientes</button>
+                    <button class="nav-btn" data-view="series" tabindex="0">🧘‍♀️ Series</button>
+                    <button class="nav-btn" data-view="create-series" tabindex="0">➕ Crear Serie</button>
                 </div>
                 <div class="nav-user">
                     <span id="user-name"></span>
-                    <button id="logout-btn" class="btn-secondary">Cerrar Sesión</button>
+                    <button id="logout-btn" class="btn-secondary" tabindex="0">Cerrar Sesión</button>
                 </div>
             </nav>
 
-            <main class="main-content">
+            <main class="main-content" role="main">
                 <!-- Dashboard View -->
                 <div id="dashboard-view" class="view">
                     <div class="view-header">
@@ -126,7 +126,7 @@
                         <h2>➕ Crear Nueva Serie Terapéutica</h2>
                         <button class="btn-secondary" onclick="app.showView('series')">⬅️ Volver a Series</button>
                     </div>
-                    <form id="create-series-form" class="form">
+                    <form id="create-series-form" class="form" role="form">
                         <div class="form-row">
                             <div class="form-group">
                                 <label for="series-name">Nombre de la Serie</label>
@@ -174,15 +174,15 @@
 
         <!-- Patient Dashboard -->
         <div id="patient-dashboard" class="screen hidden">
-            <nav class="navbar">
+            <nav class="navbar" role="navigation">
                 <div class="nav-brand">Yoga Terapéutico Online</div>
                 <div class="nav-user">
                     <span id="patient-navbar-name"></span>
-                    <button id="patient-logout-btn" class="btn-secondary">Cerrar Sesión</button>
+                    <button id="patient-logout-btn" class="btn-secondary" tabindex="0">Cerrar Sesión</button>
                 </div>
             </nav>
 
-            <main class="main-content">
+            <main class="main-content" role="main">
                 <div id="patient-home" class="patient-view">
                     <div class="series-info">
                         <h2>🧘‍♀️ Mi Serie Asignada</h2>
@@ -223,7 +223,7 @@
                                     <p>Antes de comenzar, indica tu nivel actual de dolor o molestia:</p>
                                     <div class="pain-scale">
                                         <label class="scale-label">Sin dolor</label>
-                                        <input type="range" id="pain-before" min="0" max="10" value="0">
+                                        <input type="range" id="pain-before" min="0" max="10" value="0" aria-label="Nivel de dolor antes de la sesión">
                                         <label class="scale-label">Dolor severo</label>
                                     </div>
                                     <div class="pain-value">Nivel actual: <span id="pain-before-value">0</span>/10</div>
@@ -238,9 +238,10 @@
                                 <div class="video-container">
                     <iframe id="posture-video"
                         height="315"
-                        title="Video tutorial de yoga"
+                        title="Video tutorial de postura de yoga"
                         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                        allowfullscreen style="width:100%; border:none;"></iframe>
+                        allowfullscreen style="width:100%; border:none;" 
+                        aria-describedby="posture-instructions"></iframe>
                                 </div>
                                 
                                 <div class="posture-info-panel">
@@ -295,7 +296,7 @@
                                         <label>¿Cómo te sientes ahora? Indica tu nivel de dolor/molestia:</label>
                                         <div class="pain-scale">
                                             <label class="scale-label">Sin dolor</label>
-                                            <input type="range" id="pain-after" min="0" max="10" value="0">
+                                            <input type="range" id="pain-after" min="0" max="10" value="0" aria-label="Nivel de dolor después de la sesión">
                                             <label class="scale-label">Dolor severo</label>
                                         </div>
                                         <div class="pain-value">Nivel actual: <span id="pain-after-value">0</span>/10</div>
@@ -326,7 +327,7 @@
                     <h3 id="patient-modal-title">Agregar Paciente</h3>
                     <button class="modal-close">&times;</button>
                 </div>
-                <form id="patient-form">
+                <form id="patient-form" role="form">
                     <div class="modal-body">
                         <div class="form-group">
                             <label for="patient-name">Nombre Completo</label>
@@ -423,9 +424,10 @@
                         <div class="video-container">
                 <iframe id="modal-posture-video"
                     height="315"
-                    title="Video tutorial de yoga"
+                    title="Video tutorial de postura de yoga"
                     allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                    allowfullscreen style="width:100%; border:none;"></iframe>
+                    allowfullscreen style="width:100%; border:none;" 
+                    aria-describedby="modal-posture-instructions"></iframe>
                         </div>
                         <div class="posture-info-detailed">
                             <p id="modal-posture-sanskrit" class="sanskrit"></p>
