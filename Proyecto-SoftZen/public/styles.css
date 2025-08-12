@@ -186,6 +186,8 @@ body {
     overflow: hidden;
     background: rgba(255,255,255,0.85);
     background-color: rgba(255,255,255,0.92);
+    /* Fallback for browsers that do not support backdrop-filter */
+    background-color: rgba(255,255,255,0.97);
     -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
 }
@@ -343,6 +345,8 @@ body {
     justify-content: space-between;
     background: rgba(255,255,255,0.85);
     background-color: rgba(255,255,255,0.85);
+    /* Fallback for browsers that do not support backdrop-filter */
+    background-color: rgba(255,255,255,0.97);
     -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
     border-bottom: 1px solid rgba(102, 126, 234, 0.1);
@@ -1111,6 +1115,8 @@ body {
     z-index: 1000;
     background: rgba(0,0,0,0.6);
     background-color: rgba(255,255,255,0.85);
+    /* Fallback for browsers that do not support backdrop-filter */
+    background-color: rgba(255,255,255,0.97);
     -webkit-backdrop-filter: blur(4px);
     backdrop-filter: blur(4px);
 }
